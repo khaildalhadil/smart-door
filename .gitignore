@@ -1,0 +1,10 @@
+# Secrets: never commit these.
+.env
+config.ini
+data/
+__pycache__/
+config.ini.before-*
+*.onnx
+.claude/
+.lgd-nfy0
+*.pyc

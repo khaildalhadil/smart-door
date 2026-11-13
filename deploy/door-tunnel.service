@@ -1,0 +1,34 @@
+# Reverse SSH tunnel that lets the WhatsApp bot reach the door API.
+# On the bot server, 172.17.0.1:8001 (the Docker bridge, not on the internet)
+# is forwarded to this Pi's 127.0.0.1:8000.  The server's authorized_keys
+# restricts this key to permitlisten="172.17.0.1:8001", and its host key is
+# pinned in ~/.ssh/door_tunnel_known_hosts.
+#
+#   sudo cp deploy/door-tunnel.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now door-tunnel
+
+[Unit]
+Description=Reverse SSH tunnel: bot server 172.17.0.1:8001 -> door API 127.0.0.1:8000
+Wants=network-online.target
+After=network-online.target
+# Keep retrying forever (e.g. while the server is down or not set up yet).
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=khaild
+ExecStart=/usr/bin/ssh -N -i /home/khaild/.ssh/door_tunnel \
+    -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=15 \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile=/home/khaild/.ssh/door_tunnel_known_hosts \
+    -o GlobalKnownHostsFile=/dev/null \
+    -R 172.17.0.1:8001:127.0.0.1:8000 \
+    door@BOT_SERVER_IP
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

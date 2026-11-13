@@ -1,0 +1,31 @@
+# Smart lock UI + door API (127.0.0.1:8000), as a systemd *user* service.
+#
+#   cp deploy/smartlock.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now smartlock
+#
+# Starts when the desktop autologin starts the user's systemd instance.
+# Use this OR deploy/smartlock.desktop, never both: two copies fight over GPIO17.
+
+[Unit]
+Description=Smart lock touch keypad and door API
+# Keep retrying after crashes, however many.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Desktop/finalProject
+Environment=DISPLAY=:0
+Environment=PYTHONUNBUFFERED=1
+# The desktop's Xwayland (:0 plus a fresh ~/.Xauthority) comes up after the
+# user manager; wait until a client can actually connect.
+ExecStartPre=/bin/sh -c 'until xset q >/dev/null 2>&1; do sleep 2; done'
+TimeoutStartSec=infinity
+ExecStart=/usr/bin/python3 main.py
+# Same policy as deploy/run.sh: restart after a crash, stay stopped after an
+# admin's "Exit app" (exit status 0).
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

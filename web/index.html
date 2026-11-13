@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>القفل الذكي · لوحة المتابعة</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Icons: one sprite, drawn with the current text colour. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="i-door"><path d="M6 21V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v17"/><path d="M3 21h18"/><path d="M14.5 12.4v.2"/></g>
+    <g id="i-ban"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></g>
+    <g id="i-bell"><path d="M6 16v-5a6 6 0 1 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></g>
+    <g id="i-flame"><path d="M12 2.5c.8 3.2 4.5 5 4.5 9.5a4.5 4.5 0 0 1-9 0c0-1.700.7-3 1.800-4 .3 1.600 1 2.300 1.700 2.300 0-2.800 1-5.300 1-7.800z" transform="translate(0 2.5)"/></g>
+    <g id="i-clock"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></g>
+    <g id="i-user"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></g>
+    <g id="i-camera"><path d="M4 8h3l1.500-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.500"/></g>
+    <g id="i-refresh"><path d="M20 11a8 8 0 1 0-2.300 6"/><path d="M20 4v7h-7"/></g>
+    <g id="i-lock"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></g>
+    <g id="i-chat"><path d="M21 12a8 8 0 0 1-11.800 7L4 20l1.100-4.200A8 8 0 1 1 21 12z"/></g>
+    <g id="i-up"><path d="M12 19V5M6 11l6-6 6 6"/></g>
+    <g id="i-down"><path d="M12 5v14M6 13l6 6 6-6"/></g>
+    <g id="i-logout"><path d="M10 4H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h4"/><path d="M15 8l4 4-4 4M19 12H9"/></g>
+    <g id="i-theme"><circle cx="12" cy="12" r="9"/><path d="M12 3v18a9 9 0 0 0 0-18z" fill="currentColor"/></g>
+    <g id="i-key"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2 2"/></g>
+    <g id="i-gear"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.600 5.600l2.100 2.100M16.300 16.300l2.100 2.100M5.600 18.400l2.100-2.100M16.300 7.700l2.100-2.100"/></g>
+    <g id="i-check"><path d="M5 12.500l4.500 4.500L19 7.500"/></g>
+    <g id="i-alert"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.100v.2"/></g>
+    <g id="i-close"><path d="M6 6l12 12M18 6L6 18"/></g>
+    <g id="i-prev"><path d="M9 6l6 6-6 6"/></g>
+    <g id="i-next"><path d="M15 6l-6 6 6 6"/></g>
+    <g id="i-table"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M10 5v14"/></g>
+  </defs>
+</svg>
+
+<!-- ------------------------------------------------------------- sign-in -->
+<main id="gate" class="gate" hidden>
+  <section class="gate-card">
+    <div class="brand">
+      <svg class="icon icon-lg" viewBox="0 0 24 24"><use href="#i-lock"/></svg>
+      <h1>القفل الذكي</h1>
+    </div>
+
+    <div id="gate-setup" hidden>
+      <p class="lead">الصفحة جاهزة، وباقي ربطها بقاعدة البيانات.</p>
+      <ol class="steps">
+        <li>أنشئ مشروعًا مجانيًا في <span dir="ltr">supabase.com</span> ونفّذ الملف <code dir="ltr">supabase/schema.sql</code> من SQL Editor.</li>
+        <li>ضع <code dir="ltr">Project URL</code> والمفتاح <code dir="ltr">publishable</code> في الملف <code dir="ltr">web/config.js</code>.</li>
+        <li>أنشئ حسابك من <span dir="ltr">Authentication → Users → Add user</span> ثم حدّث هذه الصفحة.</li>
+      </ol>
+      <button id="demo-button" class="button primary" type="button">عرض تجريبي ببيانات وهمية</button>
+    </div>
+
+    <form id="gate-login" hidden>
+      <p class="lead">سجّل الدخول لعرض بيانات الباب.</p>
+      <label>البريد الإلكتروني
+        <input id="login-email" type="email" autocomplete="username" required dir="ltr">
+      </label>
+      <label>كلمة المرور
+        <input id="login-password" type="password" autocomplete="current-password" required dir="ltr">
+      </label>
+      <p id="login-error" class="form-error" role="alert" hidden></p>
+      <button class="button primary" type="submit">دخول</button>
+    </form>
+  </section>
+</main>
+
+<!-- ----------------------------------------------------------- dashboard -->
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="icon icon-lg" viewBox="0 0 24 24"><use href="#i-lock"/></svg>
+      <div>
+        <h1>القفل الذكي</h1>
+        <p id="subtitle" class="muted">لوحة المتابعة</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <span id="live" class="live" hidden><span class="live-dot"></span>مباشر</span>
+      <button id="refresh" class="button ghost" type="button" title="تحديث">
+        <svg class="icon" viewBox="0 0 24 24"><use href="#i-refresh"/></svg><span class="hide-narrow">تحديث</span>
+      </button>
+      <button id="theme" class="button ghost" type="button" title="فاتح / داكن" aria-label="تبديل الوضع الفاتح والداكن">
+        <svg class="icon" viewBox="0 0 24 24"><use href="#i-theme"/></svg>
+      </button>
+      <button id="logout" class="button ghost" type="button" title="خروج">
+        <svg class="icon" viewBox="0 0 24 24"><use href="#i-logout"/></svg><span class="hide-narrow">خروج</span>
+      </button>
+    </div>
+  </header>
+
+  <p id="banner" class="banner" role="status" hidden></p>
+
+  <!-- The door right now -->
+  <section id="device" class="device" aria-label="حالة الجهاز"></section>
+
+  <!-- One filter row: it scopes every number, chart and list below. -->
+  <nav class="filters" aria-label="الفترة">
+    <div id="ranges" class="segmented" role="group" aria-label="الفترة الزمنية">
+      <button type="button" data-range="today">اليوم</button>
+      <button type="button" data-range="7d">7 أيام</button>
+      <button type="button" data-range="30d">30 يومًا</button>
+      <button type="button" data-range="90d">90 يومًا</button>
+    </div>
+    <span id="range-note" class="muted"></span>
+  </nav>
+
+  <main id="content">
+    <section id="kpis" class="kpis" aria-label="الأرقام الرئيسية"></section>
+
+    <div class="grid two">
+      <figure class="card" id="card-activity">
+        <figcaption>
+          <h2 id="activity-title">الدخول اليومي</h2>
+          <p class="muted" id="activity-sub">عدد مرات فتح الباب، حسب طريقة الدخول</p>
+        </figcaption>
+        <div class="legend" id="activity-legend"></div>
+        <div class="chart" id="activity-chart" tabindex="0" role="img"></div>
+        <details class="table-view"><summary><svg class="icon" viewBox="0 0 24 24"><use href="#i-table"/></svg>عرض كجدول</summary><div id="activity-table"></div></details>
+      </figure>
+
+      <section class="card" id="card-insights">
+        <h2>تحليل الفترة</h2>
+        <ul id="insights" class="insights"></ul>
+      </section>
+    </div>
+
+    <div class="grid three">
+      <figure class="card" id="card-hours">
+        <figcaption>
+          <h2>أوقات الدخول</h2>
+          <p class="muted">عدد مرات الدخول في كل ساعة من اليوم</p>
+        </figcaption>
+        <div class="chart" id="hours-chart" tabindex="0" role="img"></div>
+        <details class="table-view"><summary><svg class="icon" viewBox="0 0 24 24"><use href="#i-table"/></svg>عرض كجدول</summary><div id="hours-table"></div></details>
+      </figure>
+
+      <figure class="card">
+        <figcaption>
+          <h2>طريقة الدخول</h2>
+          <p class="muted">كم مرة استُخدمت كل طريقة</p>
+        </figcaption>
+        <div id="methods" class="ranked"></div>
+      </figure>
+
+      <figure class="card">
+        <figcaption>
+          <h2>من دخل</h2>
+          <p class="muted">عدد مرات الدخول لكل شخص معروف</p>
+        </figcaption>
+        <div id="people" class="ranked"></div>
+      </figure>
+    </div>
+
+    <figure class="card" id="card-denied">
+      <figcaption>
+        <h2><svg class="icon status-critical" viewBox="0 0 24 24"><use href="#i-ban"/></svg><span id="denied-title">المحاولات المرفوضة يوميًا</span></h2>
+        <p class="muted">رمز خاطئ، بصمة أو وجه غير معروف، PIN خاطئ</p>
+      </figcaption>
+      <div class="chart" id="denied-chart" tabindex="0" role="img"></div>
+      <details class="table-view"><summary><svg class="icon" viewBox="0 0 24 24"><use href="#i-table"/></svg>عرض كجدول</summary><div id="denied-table"></div></details>
+    </figure>
+
+    <section class="card" id="card-gallery">
+      <div class="section-head">
+        <div>
+          <h2>الصور</h2>
+          <p class="muted">صورة من كاميرا الباب لحظة كل دخول أو محاولة أو رنّة جرس</p>
+        </div>
+        <div id="gallery-tabs" class="segmented small" role="group" aria-label="نوع الصور"></div>
+      </div>
+      <div id="gallery" class="gallery"></div>
+      <div class="more"><button id="gallery-more" class="button" type="button" hidden>عرض المزيد</button></div>
+    </section>
+
+    <section class="card" id="card-log">
+      <div class="section-head">
+        <div>
+          <h2>سجل الأحداث</h2>
+          <p class="muted" id="log-count"></p>
+        </div>
+        <div class="log-tools">
+          <div id="log-tabs" class="segmented small" role="group" aria-label="نوع الأحداث"></div>
+          <input id="log-search" type="search" placeholder="بحث: اسم، طريقة…" aria-label="بحث في السجل">
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="log">
+          <thead><tr><th>الوقت</th><th>النوع</th><th>الوصف</th><th>الشخص</th><th>صورة</th></tr></thead>
+          <tbody id="log-body"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button id="log-prev" class="button" type="button">الأحدث</button>
+        <span id="log-page" class="muted"></span>
+        <button id="log-next" class="button" type="button">الأقدم</button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot muted">
+    <span id="foot-note"></span>
+  </footer>
+</div>
+
+<!-- Photo viewer -->
+<dialog id="viewer" class="viewer" aria-label="عرض الصورة">
+  <div class="viewer-body">
+    <img id="viewer-img" alt="">
+    <div class="viewer-side">
+      <div id="viewer-info"></div>
+      <div class="viewer-nav">
+        <button id="viewer-newer" class="button" type="button"><svg class="icon" viewBox="0 0 24 24"><use href="#i-prev"/></svg>الأحدث</button>
+        <button id="viewer-older" class="button" type="button">الأقدم<svg class="icon" viewBox="0 0 24 24"><use href="#i-next"/></svg></button>
+      </div>
+    </div>
+    <button id="viewer-close" class="button ghost viewer-close" type="button" aria-label="إغلاق">
+      <svg class="icon" viewBox="0 0 24 24"><use href="#i-close"/></svg>
+    </button>
+  </div>
+</dialog>
+
+<div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+
+<script src="config.js"></script>
+<script src="vendor/supabase-2.119.0.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

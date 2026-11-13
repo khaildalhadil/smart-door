@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Smart Lock
+Comment=Touch keypad door lock (starts fullscreen at login)
+Exec=/home/khaild/Desktop/finalProject/deploy/run.sh
+Terminal=false
+X-GNOME-Autostart-enabled=true
