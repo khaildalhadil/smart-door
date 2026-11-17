@@ -1,0 +1,25 @@
+# WhatsApp link for the smart lock (whatsapp/bot.js), as a systemd *user* service.
+#
+#   cp deploy/door-whatsapp.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now door-whatsapp
+#
+# The first time, it shows a QR code to link WhatsApp (data/whatsapp-qr.png):
+# WhatsApp -> Settings -> Linked devices -> Link a device.
+# Node comes from nvm: if the Node version changes, fix the path below.
+
+[Unit]
+Description=Smart lock WhatsApp link (commands + alerts, no server)
+After=smartlock.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Desktop/finalProject/whatsapp
+Environment=NODE_ENV=production
+ExecStart=%h/.nvm/versions/node/v24.14.1/bin/node bot.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

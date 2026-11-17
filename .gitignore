@@ -8,3 +8,4 @@ config.ini.before-*
 .claude/
 .lgd-nfy0
 *.pyc
+whatsapp/node_modules/
