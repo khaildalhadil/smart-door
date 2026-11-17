@@ -246,7 +246,11 @@ async function pumpAlerts () {
   try {
     const { alerts } = await (await door('GET', '/alerts')).json()
     for (const alert of alerts) {
-      for (const jid of alertTargets()) await send(jid, alert.message, alert.photo)
+      // Queued while WhatsApp was not linked: say so, a ring from hours ago is
+      // not someone at the door now.
+      const age = (Date.now() - Date.parse(alert.time || '')) / 1000
+      const text = age > 300 ? '⏱ تنبيه متأخر (كان الواتساب غير متصل):\n' + alert.message : alert.message
+      for (const jid of alertTargets()) await send(jid, text, alert.photo)
       await door('POST', '/alerts/ack', { id: alert.id })
       log(`alert #${alert.id} ${alert.type} ${alert.event} sent`)
     }
