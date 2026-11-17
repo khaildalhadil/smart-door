@@ -34,6 +34,7 @@ import makeWASocket, {
   Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  fetchLatestWaWebVersion,
   isJidBroadcast,
   isJidGroup,
   isJidNewsletter,
@@ -276,8 +277,16 @@ async function connect () {
   fs.mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 })
   fs.chmodSync(AUTH_DIR, 0o700)
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
+  // WhatsApp refuses to link an outdated client ("check your connection" on
+  // the phone): announce the version web.whatsapp.com serves today.
   let version
-  try { ({ version } = await fetchLatestBaileysVersion()) } catch { /* use the built-in one */ }
+  for (const latest of [fetchLatestWaWebVersion, fetchLatestBaileysVersion]) {
+    try {
+      const found = await latest()
+      if (found?.version) { version = found.version; break }
+    } catch { /* try the next source, then the built-in one */ }
+  }
+  log(`WhatsApp Web version ${version ? version.join('.') : '(built-in)'}`)
   sock = makeWASocket({
     auth: state,
     version,
