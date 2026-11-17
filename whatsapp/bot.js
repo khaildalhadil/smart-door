@@ -331,7 +331,11 @@ async function connect () {
         log('another copy of this bot took over the session; this one stops')
         process.exit(1)
       }
-      const wait = code === DisconnectReason.restartRequired ? 500 : Math.min(60000, 2000 * 2 ** retry++)
+      // Not linked yet: the QR simply ran out, so show a new one right away.
+      const linking = !sock?.authState?.creds?.registered
+      const wait = code === DisconnectReason.restartRequired ? 500
+        : linking ? 1000
+          : Math.min(60000, 2000 * 2 ** retry++)
       setTimeout(() => connect().catch(err => { log('connect:', err.message); process.exit(1) }), wait)
     }
   })
