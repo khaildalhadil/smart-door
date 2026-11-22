@@ -8,10 +8,13 @@ Safety properties implemented here:
 
 * **Released at rest.**  The pin is driven only while the door should be open.
   On startup, after every unlock and on shutdown (unhandled exception and
-  SIGTERM included) it is released: an input with no pull, the same as an idle
-  Pi pin.  The relay is then off whichever level the board switches on with,
-  so a wrong ``relay_active_high`` fails as "the door does not open", never as
-  "the lock stays powered".
+  SIGTERM included) it is released: an input, weakly pulled (~50 kOhm, the
+  Pi's internal pull) toward the OFF level.  That pull is too weak to switch on
+  a board of the other polarity, so a wrong ``relay_active_high`` still fails
+  as "the door does not open", never as "the lock stays powered".  It does
+  stop the input from floating: a floating GPIO17 picked up spikes from the
+  lock's own switch-off kick, 4 ms after release, which can re-trigger the
+  relay (the lock then clicks several times).
 * **Hard duration ceiling.**  ``lock.max_unlock_seconds`` clamps every request,
   so a bad config or a UI bug cannot cook the solenoid coil.
 * **Watchdog.**  A single supervisor thread re-asserts the expected output level
@@ -96,19 +99,20 @@ class GpiozeroBackend(RelayBackend):
         Device.ensure_pin_factory()
         self._pin = Device.pin_factory.pin(pin)
         self._on_level = 1 if active_high else 0
-        self._pin.input_with_pull("floating")
+        self._rest_pull = "down" if active_high else "up"  # toward OFF
+        self._pin.input_with_pull(self._rest_pull)
 
     def set_active(self, active: bool) -> None:
         pin = self._pin
         if active:
             if pin.function != "output" or pin.state != self._on_level:
                 pin.output_with_state(self._on_level)
-        elif pin.function != "input":
-            pin.input_with_pull("floating")
+        elif pin.function != "input" or pin.pull != self._rest_pull:
+            pin.input_with_pull(self._rest_pull)
 
     def close(self) -> None:
         try:
-            self._pin.input_with_pull("floating")
+            self._pin.input_with_pull(self._rest_pull)
         finally:
             self._pin.close()
 
@@ -126,6 +130,7 @@ class RPiGPIOBackend(RelayBackend):
         self._gpio = GPIO
         self._pin = pin
         self._on_level = GPIO.HIGH if active_high else GPIO.LOW
+        self._rest_pull = GPIO.PUD_DOWN if active_high else GPIO.PUD_UP  # toward OFF
         GPIO.setwarnings(False)
         GPIO.setmode(GPIO.BCM)
         self.set_active(False)
@@ -135,7 +140,7 @@ class RPiGPIOBackend(RelayBackend):
         if active:
             GPIO.setup(self._pin, GPIO.OUT, initial=self._on_level)
         else:
-            GPIO.setup(self._pin, GPIO.IN, pull_up_down=GPIO.PUD_OFF)
+            GPIO.setup(self._pin, GPIO.IN, pull_up_down=self._rest_pull)
 
     def close(self) -> None:
         try:
