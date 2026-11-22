@@ -150,6 +150,24 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # keep the door open for hours).  The alerts still go out.
         "max_reopens": "15",
     },
+    "buzzer": {
+        # Beeps while a fire / smoke alarm lasts (app/buzzer.py).
+        "enabled": "false",
+        # GPIO13 = physical pin 33 (GND on pin 39).
+        "pin": "13",
+        # true: the buzzer sounds on HIGH.  "Low level trigger" modules: false.
+        # Wrong value -> it sounds from the moment the app starts: flip it.
+        "active_high": "true",
+        # 0 = active buzzer (sounds by itself on DC).  A passive buzzer only
+        # clicks on DC: give it a tone in Hz instead, e.g. 2500.
+        "pwm_hz": "0",
+        # Beep pattern while the alarm lasts.
+        "on_seconds": "0.5",
+        "off_seconds": "0.5",
+        # Stop beeping after this long even if the alarm goes on (a sensor in
+        # sunlight must not beep for hours).  0 = until the alarm clears.
+        "max_seconds": "300",
+    },
     "photos": {
         # Camera picture with every entry, refusal, doorbell ring and alarm
         # (app/recorder.py), kept in data/photos/.  Needs [face] enabled.

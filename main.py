@@ -23,6 +23,7 @@ from pathlib import Path
 
 from app.alerts import AlertQueue
 from app.api import ApiServer
+from app.buzzer import Buzzer
 from app.cloud import CloudSync
 from app.commands import CommandRouter
 from app.config import CONFIG_PATH, Config
@@ -84,6 +85,11 @@ def main(argv=None) -> int:
     # work whether or not the screen is up.
     alerts = AlertQueue(config, events)
     hazards = HazardMonitor(config, lock, alerts, events)
+    buzzer = Buzzer(config, events)
+    if args.simulate:
+        buzzer.enabled = False  # --simulate never touches GPIO
+    buzzer.start()
+    hazards.add_listener(buzzer.on_hazards)
     hazards.start()
     doorbell = Doorbell(config, events, lock)
     # Rows and pictures go to Supabase when .env has its keys; otherwise they
@@ -131,6 +137,7 @@ def main(argv=None) -> int:
         """Every exit path: stop the helpers, then lock the door."""
         doorbell.close()
         hazards.close()
+        buzzer.close()
         faces.close()
         temp_codes.close()
         fingerprints.close()
