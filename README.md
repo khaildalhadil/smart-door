@@ -257,9 +257,20 @@ handle_message(door, text, sender, send_text, send_image, llm=ask_model)  # llm 
 
 الصور في `data/photos/` تُحذف بعد 30 يومًا (`[photos] keep_days`).
 
-## قاعدة البيانات وصفحة الويب (Supabase)
+## قاعدة البيانات وموقع المتابعة (Supabase + React)
 
-`app/cloud.py` ينسخ السجل والصور إلى Supabase، والصفحة `web/` تعرضها: أرقام، رسوم، تحليل مكتوب، صور، وسجل قابل للبحث. بدون مفاتيح يبقى كل شيء على الـ Pi ويُرفع لاحقًا، وكذلك عند انقطاع الإنترنت.
+`app/cloud.py` ينسخ السجل والصور إلى Supabase (المشروع **Smart Door**)، وموقع المتابعة في `web/` يعرضها: حالة الباب الآن، أرقام، رسوم، تحليل مكتوب، صور الكاميرا، وسجل قابل للبحث، مع تحديث مباشر (Realtime). بدون مفاتيح يبقى كل شيء على الـ Pi ويُرفع لاحقًا، وكذلك عند انقطاع الإنترنت.
+
+الموقع مبني بـ **React 19 + TypeScript + Vite**، ويقرأ من Supabase مباشرة بـ `@supabase/supabase-js`:
+
+```
+cd web
+npm ci            # أول مرة
+npm run dev       # للتطوير: http://localhost:5173
+npm run build     # فحص الأنواع ثم بناء web/dist
+```
+
+**النشر:** مشروع Vercel اسمه `smart-door-dashboard` مربوط بمستودع GitHub (المجلد `web/`). كل `git push` إلى `main` يبني الموقع وينشره تلقائيًا. الرابط والمفتاح **publishable** في `web/public/config.js`، وتغييرهما لا يحتاج إعادة بناء.
 
 ### الحسابات والصلاحيات
 
@@ -283,7 +294,7 @@ handle_message(door, text, sender, send_text, send_image, llm=ask_model)  # llm 
 
 ### التجهيز
 
-1. أنشئ مشروعًا في supabase.com، ثم **SQL Editor**: الصق `supabase/schema.sql` كاملًا واضغط Run.
+1. في مشروع Supabase **Smart Door**: افتح **SQL Editor**، الصق `supabase/schema.sql` كاملًا واضغط Run.
 2. **Authentication ← Users ← Add user**: أنشئ حسابك (مع Auto Confirm User). ثم في SQL Editor شغّل القسم 9 من آخر الملف بعد وضع بريدك مكان `you@example.com`: صار حسابك مديرًا، والباقون تضيفهم من الصفحة.
 3. أطفئ التسجيل العام: **Authentication ← Sign In / Providers ← Allow new users to sign up**.
 4. انشر دالة الحسابات بدون فحص JWT من المنصة (الدالة تفحص الطالب بنفسها، وفحص المنصة لا يفهم المفاتيح الجديدة):
@@ -297,10 +308,10 @@ handle_message(door, text, sender, send_text, send_image, llm=ask_model)  # llm 
    SUPABASE_SERVICE_KEY=sb_secret_...
    ```
    ثم `python3 tools/cloud_check.py` للفحص، و`systemctl --user restart smartlock`.
-6. في `web/config.js` ضع الـ URL والمفتاح **publishable** (ليس السري أبدًا).
-7. افتح `web/index.html` في المتصفح، أو ارفع مجلد `web/` على أي استضافة ثابتة (Netlify Drop، Vercel، GitHub Pages).
+6. `web/public/config.js` فيه رابط المشروع ومفتاحه **publishable** (ليس السري أبدًا).
+7. ادفع التغييرات إلى GitHub: Vercel ينشر الموقع تلقائيًا.
 
-للمعاينة بدون Supabase: `web/index.html?demo` (بصلاحية مدير) أو `web/index.html?demo=member` (بصلاحية مستخدم). الصفحة لا تفتح الباب ولا تغيّر بياناته.
+للمعاينة بدون Supabase: أضف `?demo` لرابط الموقع (بصلاحية مدير) أو `?demo=member` (بصلاحية مستخدم). الموقع لا يفتح الباب ولا يغيّر بياناته.
 
 ## تنبيهات الحريق والدخان
 
@@ -386,7 +397,7 @@ app/cloud.py            المزامنة مع Supabase
 bot/door_bot.py         ملف جاهز لطرف البوت
 supabase/schema.sql     جداول Supabase، والصلاحيتان (RLS)، ودوال الحسابات
 supabase/functions/door-accounts/   دالة Edge: إضافة وحذف الحسابات وكلمة المرور (للمدير)
-web/                    صفحة المتابعة (دخول + صلاحيتان)
+web/                    موقع المتابعة: React + TypeScript + Vite (دخول + صلاحيتان)
 app/ui/                 الواجهة (Tkinter)
 tools/                  أدوات الطرفية
 deploy/                 التشغيل التلقائي (smartlock.service)
