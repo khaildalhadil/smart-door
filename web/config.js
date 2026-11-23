@@ -6,8 +6,8 @@
 //           also works)
 //
 // The publishable key is safe to put in a web page: row-level security lets a
-// visitor read nothing until they sign in with an account listed in the
-// door_viewers table.  NEVER put the secret key ("sb_secret_..." or
+// visitor read nothing until they sign in with an account that has a role in
+// the door_members table (admin or member).  NEVER put the secret key ("sb_secret_..." or
 // "service_role") here: that one belongs only in the .env file on the Pi.
 //
 // With both values empty the page offers a demo with made-up data.

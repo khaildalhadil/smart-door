@@ -3,10 +3,18 @@
  * Reads the door's history from Supabase (tables door_events / door_status,
  * bucket door-photos; see supabase/schema.sql) and shows it: headline numbers,
  * charts, a short written analysis, the camera pictures and the event log.
- * Read-only: nothing here can open the door or change data.
+ * Nothing here can open the door or change the door's data.
+ *
+ * Two roles, decided by the database (door_members + row-level security in
+ * supabase/schema.sql): an admin sees everything and manages the dashboard
+ * accounts; a member sees the door's status, numbers and history, without
+ * the camera pictures, the WhatsApp / panel / system records and the
+ * accounts.  The page only leaves out what the database would return empty
+ * or refuse anyway.
  *
  * Plain script, no build step: open index.html or put the web/ folder on any
- * static host.  index.html?demo runs on made-up data without Supabase.
+ * static host.  index.html?demo (or ?demo=member) runs on made-up data
+ * without Supabase.
  *
  * Everything that comes from the database is put on the page as text
  * (textContent), never as HTML.
@@ -63,15 +71,48 @@
               ["alarm", "إنذار"]];
   var RANGE_DAYS = { today: 1, "7d": 7, "30d": 30, "90d": 90 };
 
+  // -------------------------------------------------------------------- roles
+  var ROLE_NAME = { admin: "مدير", member: "مستخدم" };
+  var ROLE_NOTE = { admin: "كل الصلاحيات", member: "صلاحيات محدودة" };
+  // What each role may do: [what, admin, member].  The same table as the top
+  // of supabase/schema.sql, where it is enforced.
+  var PERMISSIONS = [
+    ["حالة الباب الآن", true, true],
+    ["الأرقام والرسوم وتحليل الفترة", true, true],
+    ["سجل الدخول والمحاولات المرفوضة والجرس والإنذارات", true, true],
+    ["تغيير كلمة مرور حسابه", true, true],
+    ["صور الكاميرا", true, false],
+    ["أوامر واتساب وسجل الإدارة والنظام", true, false],
+    ["إدارة الحسابات والصلاحيات وسجل تغييراتها", true, false]
+  ];
+  var MEMBER_DENIED = ["keypad", "face", "fingerprint"];   // refusals a member sees
+  var EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  var MIN_PASSWORD = 8, MAX_PASSWORD_BYTES = 72;
+  var AUDIT_ROWS = 20;
+  var AUDIT_ICON = { "member.add": "i-user", "member.role": "i-shield", "member.remove": "i-trash",
+                     "password.reset": "i-key" };
+
+  /** The "door members read events" policy, repeated for the demo only. */
+  function visibleTo(role, r) {
+    if (role === "admin") return true;
+    if (role !== "member") return false;
+    return ["entry", "doorbell", "alarm"].indexOf(r.category) >= 0 ||
+           (r.category === "denied" && MEMBER_DENIED.indexOf(r.method) >= 0);
+  }
+
   // -------------------------------------------------------------------- state
   var state = { range: "7d", rows: [], status: null, prev: { entry: null, denied: null },
                 source: null, demo: false, galleryTab: "all", galleryShown: GALLERY_STEP,
-                logTab: "all", logPage: 0, search: "", loadedAt: 0, viewer: [], viewerAt: 0 };
+                logTab: "all", logPage: 0, search: "", loadedAt: 0, viewer: [], viewerAt: 0,
+                me: null, role: null, accounts: null, audit: null };
   var signed = new Map();      // bucket path -> { url, until }
   var timers = [];
 
   // ---------------------------------------------------------------- DOM tools
   function $(id) { return document.getElementById(id); }
+  function isAdmin() { return state.role === "admin"; }
+  /** Keeps an e-mail address in one piece inside Arabic text. */
+  function isolate(text) { return "\u2068" + text + "\u2069"; }
 
   function add(node, children) {
     for (var i = 0; i < children.length; i++) {
@@ -207,13 +248,43 @@
               CATEGORY[r.category] || r.category);
   }
 
+  // Error codes from the database functions, the door-accounts function and
+  // Supabase Auth, in words.
+  var ERRORS = {
+    not_admin: "هذا الإجراء للمدير فقط.",
+    self_change: "لا يمكنك تغيير صلاحية حسابك أو حذفه بنفسك.",
+    bad_role: "صلاحية غير معروفة.",
+    no_user: "الحساب غير موجود (ربما حُذف).",
+    email_exists: "يوجد حساب بهذا البريد. يمكنك منحه صلاحية من القائمة.",
+    weak_password: "كلمة المرور ضعيفة: 8 أحرف على الأقل، ويُفضّل حروف وأرقام.",
+    long_password: "كلمة المرور طويلة جدًا.",
+    same_password: "كلمة المرور الجديدة هي نفس الحالية.",
+    mismatch: "كلمتا المرور غير متطابقتين.",
+    bad_email: "البريد الإلكتروني غير صحيح.",
+    delete_failed: "سُحبت صلاحية الحساب، لكن تعذّر حذفه نهائيًا. حاول مرة أخرى.",
+    auth_error: "خدمة الحسابات في Supabase لم ترد. حاول بعد قليل.",
+    server_error: "خطأ في الخادم. حاول بعد قليل.",
+    no_session: "انتهت الجلسة. سجّل الدخول من جديد.",
+    bad_request: "طلب غير صحيح.",
+    function_missing: "دالة الحسابات door-accounts غير منشورة في Supabase بعد (الخطوات في README)."
+  };
+
   function errorText(err) {
     var message = (err && (err.message || err.error_description)) || String(err);
+    var code = err && err.code;
+    if (Object.prototype.hasOwnProperty.call(ERRORS, message)) return ERRORS[message];
+    if (code && Object.prototype.hasOwnProperty.call(ERRORS, code)) return ERRORS[code];
+    if (/Failed to send a request to the Edge Function|Requested function was not found/i.test(message)) {
+      return ERRORS.function_missing;
+    }
+    if (/Could not find the function|PGRST202/i.test(message)) {
+      return "قاعدة البيانات غير مهيأة لهذه النسخة: نفّذ supabase/schema.sql في SQL Editor.";
+    }
     if (/Invalid login credentials/i.test(message)) return "البريد أو كلمة المرور غير صحيحة.";
     if (/Email not confirmed/i.test(message)) return "هذا البريد لم يُؤكَّد بعد. أكّده من لوحة Supabase.";
     if (/Failed to fetch|NetworkError|Load failed/i.test(message)) return "تعذّر الاتصال بقاعدة البيانات. تحقق من الإنترنت.";
     if (/JWT|expired|401/i.test(message)) return "انتهت الجلسة. سجّل الدخول من جديد.";
-    if (/permission denied|42501/i.test(message)) return "لا توجد صلاحية قراءة. نفّذ supabase/schema.sql وأضف بريدك إلى door_viewers.";
+    if (/permission denied|42501/i.test(message)) return "لا توجد صلاحية لهذا. تأكد أن supabase/schema.sql منفّذ كاملًا.";
     if (/does not exist|42P01|PGRST205/i.test(message)) return "الجداول غير موجودة. نفّذ supabase/schema.sql في SQL Editor.";
     return "خطأ: " + message;
   }
@@ -452,6 +523,12 @@
       this.client = window.supabase.createClient(CFG.url, CFG.key, {
         auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
       });
+      // Signed out in another tab, or the account was deleted: back to the form.
+      this.client.auth.onAuthStateChange(function (event) {
+        if (event === "SIGNED_OUT" && state.source === Cloud) {
+          setTimeout(function () { showGate("login"); }, 0);
+        }
+      });
     },
     session: async function () {
       var result = await this.client.auth.getSession();
@@ -463,10 +540,55 @@
       return result.data.session;
     },
     signOut: function () { return this.client.auth.signOut(); },
-    isViewer: async function () {
-      var result = await this.client.rpc("is_door_viewer");
+    /** { user_id, email, role }: role is "admin", "member" or null (no access). */
+    me: async function () {
+      var result = await this.client.rpc("door_me");
       if (result.error) throw result.error;
-      return result.data === true;
+      return result.data;
+    },
+    changePassword: async function (password) {
+      var result = await this.client.auth.updateUser({ password: password });
+      if (result.error) throw result.error;
+    },
+    // Admins only; the database refuses everyone else.
+    members: async function () {
+      var result = await this.client.rpc("door_list_members");
+      if (result.error) throw result.error;
+      return result.data || [];
+    },
+    auditLog: async function (limit) {
+      var result = await this.client.from("door_audit")
+        .select("id,ts,actor_email,action,target_email,old_role,new_role")
+        .order("ts", { ascending: false }).limit(limit);
+      if (result.error) throw result.error;
+      return result.data || [];
+    },
+    setRole: async function (userId, role) {
+      var result = await this.client.rpc("door_set_role", { p_user: userId, p_role: role });
+      if (result.error) throw result.error;
+    },
+    /** The door-accounts Edge Function: things that need Supabase's secret key. */
+    accounts: async function (body) {
+      var result = await this.client.functions.invoke("door-accounts", { body: body });
+      if (!result.error) return result.data;
+      var code = "", response = result.error.context;
+      if (response && typeof response.json === "function") {
+        try {
+          var payload = await response.json();
+          code = (payload && payload.error) || "";
+        } catch (err) { /* not JSON */ }
+        if (!code && response.status === 404) code = "function_missing";
+      }
+      throw new Error(code || result.error.message);
+    },
+    createAccount: function (email, password, role) {
+      return this.accounts({ action: "create", email: email, password: password, role: role });
+    },
+    deleteAccount: function (userId) {
+      return this.accounts({ action: "delete", user_id: userId });
+    },
+    resetPassword: function (userId, password) {
+      return this.accounts({ action: "password", user_id: userId, password: password });
     },
     events: async function (fromISO) {
       var out = [];
@@ -504,6 +626,10 @@
         .on("postgres_changes", { event: "*", schema: "public", table: CFG.statusTable },
             function (payload) { if (payload["new"] && payload["new"].id) onStatus(payload["new"]); })
         .subscribe(function (status) { onState(status === "SUBSCRIBED"); });
+    },
+    unsubscribe: function () {
+      if (this.channel) this.client.removeChannel(this.channel);
+      this.channel = null;
     }
   };
 
@@ -600,19 +726,128 @@
       rows.sort(function (a, c) { return a.ts < c.ts ? 1 : -1; });
     }
     function all() { if (!rows) build(); return rows; }
+
+    // Dashboard accounts, in memory, under the same rules as the database.
+    var role = "admin", accounts = null, changes = null;
+    function iso(t) { return new Date(t).toISOString(); }
+    function people() {
+      if (accounts) return accounts;
+      var now = Date.now(), day = 86400000;
+      accounts = [
+        { user_id: "demo-khalid", email: "khalid@example.com", role: "admin",
+          created_at: iso(now - 60 * day), last_sign_in_at: iso(now - 4 * 60000) },
+        { user_id: "demo-sara", email: "sara@example.com", role: "member",
+          created_at: iso(now - 21 * day), last_sign_in_at: iso(now - 26 * 3600000) },
+        { user_id: "demo-ahmed", email: "ahmed@example.com", role: "member",
+          created_at: iso(now - 9 * day), last_sign_in_at: null },
+        { user_id: "demo-guard", email: "guard@example.com", role: null,
+          created_at: iso(now - 2 * day), last_sign_in_at: null }
+      ];
+      changes = [
+        { id: 3, ts: iso(now - 9 * day), actor_email: "khalid@example.com", action: "member.add",
+          target_email: "ahmed@example.com", old_role: null, new_role: "member" },
+        { id: 2, ts: iso(now - 20 * day), actor_email: "khalid@example.com", action: "password.reset",
+          target_email: "sara@example.com", old_role: null, new_role: null },
+        { id: 1, ts: iso(now - 21 * day), actor_email: "khalid@example.com", action: "member.add",
+          target_email: "sara@example.com", old_role: null, new_role: "member" }
+      ];
+      return accounts;
+    }
+    function self() {
+      var email = role === "admin" ? "khalid@example.com" : "sara@example.com";
+      return people().filter(function (a) { return a.email === email; })[0];
+    }
+    function need(ok, code) { if (!ok) throw new Error(code); }
+    function admin() { need(self().role === "admin", "not_admin"); }
+    function find(id) {
+      var hit = people().filter(function (a) { return a.user_id === id; })[0];
+      need(hit, "no_user");
+      return hit;
+    }
+    function note(action, target, before, after) {
+      changes.unshift({ id: Date.now(), ts: iso(Date.now()), actor_email: self().email, action: action,
+                        target_email: target.email, old_role: before, new_role: after });
+    }
+    function later(value) {          // a moment, like a request over the internet
+      return new Promise(function (resolve) { setTimeout(function () { resolve(value); }, 200); });
+    }
+
     return {
-      events: async function (fromISO) { return all().filter(function (r) { return r.ts >= fromISO; }); },
+      useRole: function (next) { role = next === "member" ? "member" : "admin"; },
+      me: async function () {
+        var me = self();
+        return { user_id: me.user_id, email: me.email, role: me.role };
+      },
+      events: async function (fromISO) {
+        var who = self().role;
+        return all().filter(function (r) { return r.ts >= fromISO && visibleTo(who, r); });
+      },
       count: async function (category, fromISO, toISO) {
-        return all().filter(function (r) { return r.category === category && r.ts >= fromISO && r.ts < toISO; }).length;
+        var who = self().role;
+        return all().filter(function (r) {
+          return r.category === category && r.ts >= fromISO && r.ts < toISO && visibleTo(who, r);
+        }).length;
       },
       status: async function () {
         return { id: "door", updated_at: new Date(Date.now() - 20000).toISOString(), lock: "locked",
                  alarm: "", camera: true, bot: true, info: {} };
       },
       sign: async function () { return {}; },
-      isViewer: async function () { return true; },
       subscribe: function () {},
-      signOut: async function () {}
+      unsubscribe: function () {},
+      signOut: async function () {},
+      changePassword: async function (password) {
+        need(String(password).length >= MIN_PASSWORD, "weak_password");
+        return later();
+      },
+      members: async function () {
+        admin();
+        var me = self();
+        return later(people().map(function (a) { return Object.assign({ is_me: a === me }, a); }));
+      },
+      auditLog: async function (limit) {
+        admin();
+        return changes.slice(0, limit);
+      },
+      setRole: async function (id, next) {
+        admin();
+        need(next === "admin" || next === "member", "bad_role");
+        var target = find(id);
+        need(target !== self(), "self_change");
+        if (target.role !== next) {
+          note(target.role ? "member.role" : "member.add", target, target.role, next);
+          target.role = next;
+        }
+        return later();
+      },
+      createAccount: async function (email, password, next) {
+        admin();
+        email = String(email).trim().toLowerCase();
+        need(EMAIL.test(email), "bad_email");
+        need(String(password).length >= MIN_PASSWORD, "weak_password");
+        need(next === "admin" || next === "member", "bad_role");
+        need(!people().some(function (a) { return a.email === email; }), "email_exists");
+        var account = { user_id: "demo-" + Date.now(), email: email, role: next,
+                        created_at: iso(Date.now()), last_sign_in_at: null };
+        accounts.push(account);
+        note("member.add", account, null, next);
+        return later({ ok: true });
+      },
+      deleteAccount: async function (id) {
+        admin();
+        var target = find(id);
+        need(target !== self(), "self_change");
+        if (target.role) note("member.remove", target, target.role, null);
+        accounts.splice(accounts.indexOf(target), 1);
+        return later({ ok: true });
+      },
+      resetPassword: async function (id, password) {
+        admin();
+        var target = find(id);
+        need(String(password).length >= MIN_PASSWORD, "weak_password");
+        note("password.reset", target, null, null);
+        return later({ ok: true });
+      }
     };
   })();
 
@@ -630,7 +865,17 @@
     node.className = "banner" + (isError ? " error" : "");
   }
 
+  function demoBanner() {
+    var node = $("banner"), other = isAdmin() ? "member" : "admin";
+    node.hidden = false;
+    node.className = "banner";
+    add(clear(node), ["عرض تجريبي ببيانات وهمية، بصلاحية «" + ROLE_NAME[state.role] + "». ",
+                      el("a", { href: "?demo=" + other }, "اعرضها بصلاحية «" + ROLE_NAME[other] + "»")]);
+  }
+
   async function load() {
+    var source = state.source;
+    if (!source) return;
     var content = $("content");
     content.classList.add("loading");    // the previous render stays, dimmed
     try {
@@ -638,25 +883,34 @@
       var before = new Date(from.getTime());
       before.setDate(before.getDate() - days);
       var fromISO = from.toISOString(), beforeISO = before.toISOString();
-      var source = state.source;
+      // The role is asked again on every load: a change made by an admin
+      // reaches an open page within a minute.
       var got = await Promise.all([source.events(fromISO), source.status(),
                                    source.count("entry", beforeISO, fromISO),
-                                   source.count("denied", beforeISO, fromISO)]);
+                                   source.count("denied", beforeISO, fromISO), source.me()]);
+      if (state.source !== source) return;            // signed out meanwhile
+      var me = got[4];
+      if (!me || !me.role) {
+        showGate("denied", "", me ? me.email : "");
+        return;
+      }
+      if (me.role !== state.role) {
+        applyRole(me);
+        toast("صلاحيتك الآن: " + ROLE_NAME[me.role]);
+      }
       got[0].forEach(function (r) { r.t = Date.parse(r.ts); });
       state.rows = got[0];
       state.status = got[1];
       state.prev = { entry: got[2], denied: got[3] };
       state.loadedAt = Date.now();
-      var notice = state.demo ? "عرض تجريبي: هذه بيانات وهمية، ليست من بابك." : "";
-      if (!state.demo && !state.rows.length && !state.status && !(await source.isViewer())) {
-        notice = "حسابك مسجّل الدخول لكنه غير مضاف إلى جدول door_viewers، فلا تظهر له بيانات. " +
-                 "أضف بريدك من SQL Editor (آخر سطر في supabase/schema.sql).";
-      }
-      banner(notice, false);
+      if (state.demo) demoBanner();
+      else banner("", false);
       render();
+      if (isAdmin()) loadAccounts();
     } catch (err) {
+      if (state.source !== source) return;
       banner(errorText(err), true);
-      if (/JWT|expired|401/i.test(String(err && err.message))) showGate("login");
+      if (/JWT|expired|401|no_session/i.test(String(err && err.message))) showGate("login", errorText(err));
     } finally {
       content.classList.remove("loading");
     }
@@ -695,7 +949,7 @@
            "دخول", "لا يوجد دخول باسم معروف في هذه الفترة");
     renderDenied(denied);
     renderInsights(entries, denied, rings, alarms, rows);
-    renderGallery();
+    if (isAdmin()) renderGallery();
     renderLog();
     $("range-note").textContent = state.range === "today" ? F_WEEKDAY.format(Date.now())
       : "من " + F_DAY.format(rangeStart()) + " إلى اليوم";
@@ -1027,17 +1281,19 @@
   }
 
   function renderLog() {
+    if (!isAdmin() && state.logTab === "other") state.logTab = "all";
     tabs($("log-tabs"), state.logTab, function (tab) {
       state.logTab = tab;
       state.logPage = 0;
       renderLog();
-    }, [["other", "أخرى"]]);
+    }, isAdmin() ? [["other", "أخرى"]] : []);
     var all = logRows(), pages = Math.max(1, Math.ceil(all.length / LOG_STEP));
     state.logPage = Math.min(state.logPage, pages - 1);
     var shown = all.slice(state.logPage * LOG_STEP, (state.logPage + 1) * LOG_STEP);
     var body = clear($("log-body"));
     if (!shown.length) {
-      body.appendChild(el("tr", null, el("td", { colspan: "5", "class": "empty" }, "لا توجد أحداث مطابقة")));
+      body.appendChild(el("tr", null, el("td", { colspan: isAdmin() ? "5" : "4", "class": "empty" },
+                                         "لا توجد أحداث مطابقة")));
     }
     var withPhotos = state.rows.filter(function (r) { return r.photo; });
     shown.forEach(function (r) {
@@ -1046,9 +1302,9 @@
         el("td", null, tag(r)),
         el("td", null, describe(r), el("small", null, r.detail || "")),
         el("td", { "class": "who" }, r.person || "—"),
-        el("td", null, r.photo ? el("button", { "class": "link", type: "button",
+        isAdmin() ? el("td", null, r.photo ? el("button", { "class": "link", type: "button",
           onclick: function () { openViewer(withPhotos, withPhotos.indexOf(r)); } },
-          icon("i-camera"), "عرض") : "")));
+          icon("i-camera"), "عرض") : "") : null));
     });
     $("log-count").textContent = count(all.length, "حدث واحد", "حدثان", "أحداث", "حدثًا");
     $("log-page").textContent = "صفحة " + n(state.logPage + 1) + " من " + n(pages);
@@ -1056,26 +1312,432 @@
     $("log-next").disabled = state.logPage >= pages - 1;
   }
 
+  // ------------------------------------------------------------------- toast
+  var toastTimer = 0;
+  function toast(text) {
+    var node = $("toast");
+    node.textContent = text;
+    node.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { node.hidden = true; }, 5000);
+  }
+
+  // ------------------------------------------------------------------- sheet
+  // One small modal form, reused for: add an account, a new password, a
+  // confirmation, "my account".
+  //   job = { title, body: [nodes], submit, danger, onSubmit() -> message, onClose() }
+  var sheetJob = null, fieldSeq = 0;
+
+  function openSheet(job) {
+    var dialog = $("sheet"), body = $("sheet-body"), submit = $("sheet-submit");
+    sheetJob = job;
+    $("sheet-title").textContent = job.title;
+    add(clear(body), job.body || []);
+    submit.hidden = !job.onSubmit;
+    submit.disabled = false;
+    submit.textContent = job.submit || "حفظ";
+    submit.className = "button " + (job.danger ? "danger" : "primary");
+    $("sheet-cancel").textContent = job.onSubmit ? "إلغاء" : "إغلاق";
+    sheetError("");
+    if (!dialog.open) dialog.showModal();
+    var first = body.querySelector("input:not([type=radio]), select");
+    if (first) first.focus();
+  }
+
+  function sheetError(text) {
+    var node = $("sheet-error");
+    node.hidden = !text;
+    node.textContent = text || "";
+  }
+
+  function closeSheet() {
+    var job = sheetJob, dialog = $("sheet");
+    sheetJob = null;
+    if (dialog.open) dialog.close();
+    if (job && job.onClose) job.onClose();
+  }
+
+  function bindSheet() {
+    var dialog = $("sheet");
+    $("sheet-form").addEventListener("submit", async function (event) {
+      event.preventDefault();
+      var job = sheetJob;
+      if (!job || !job.onSubmit) { closeSheet(); return; }
+      var button = $("sheet-submit");
+      button.disabled = true;
+      sheetError("");
+      try {
+        var done = await job.onSubmit();
+        if (sheetJob === job) closeSheet();
+        if (done) toast(done);
+      } catch (err) {
+        if (sheetJob === job) sheetError(errorText(err));
+      } finally {
+        button.disabled = false;
+      }
+    });
+    $("sheet-cancel").addEventListener("click", closeSheet);
+    $("sheet-x").addEventListener("click", closeSheet);
+    // Escape closes the dialog without closeSheet(): tidy up here.  A dialog
+    // that is open again by now already belongs to the next job.
+    dialog.addEventListener("close", function () {
+      if (dialog.open || !sheetJob) return;
+      var job = sheetJob;
+      sheetJob = null;
+      if (job.onClose) job.onClose();
+    });
+  }
+
+  /** A label above an input, an optional button beside it and a hint below. */
+  function labelled(text, input, hint, beside) {
+    if (!input.id) input.id = "field-" + (++fieldSeq);
+    return el("div", { "class": "field" },
+      el("label", { "for": input.id }, text),
+      beside ? el("div", { "class": "input-row" }, input, beside) : input,
+      hint ? el("small", { "class": "muted" }, hint) : null);
+  }
+
+  function textField(type, autocomplete) {
+    return el("input", { type: type, "class": "input", dir: "ltr", autocomplete: autocomplete,
+                         spellcheck: "false", autocapitalize: "off" });
+  }
+
+  /** A readable password with a "make one" button: the admin hands it over. */
+  function newPasswordField(text, hint) {
+    var input = textField("text", "off");
+    var make = el("button", { type: "button", "class": "button",
+      onclick: function () { input.value = newPassword(); input.focus(); input.select(); } },
+      icon("i-refresh"), "توليد");
+    return { input: input, node: labelled(text, input, hint, make) };
+  }
+
+  /** 12 characters, at least one lower-case, upper-case and digit; no look-alikes. */
+  function newPassword() {
+    var sets = ["abcdefghijkmnpqrstuvwxyz", "ABCDEFGHJKLMNPQRSTUVWXYZ", "23456789"];
+    var letters = sets.join(""), out = "";
+    while (!sets.every(function (set) {
+      return out.split("").some(function (c) { return set.indexOf(c) >= 0; });
+    })) {
+      var bytes = new Uint32Array(12);
+      crypto.getRandomValues(bytes);
+      out = Array.prototype.map.call(bytes, function (b) { return letters.charAt(b % letters.length); }).join("");
+    }
+    return out;
+  }
+
+  function checkPassword(value) {
+    if (typeof value !== "string" || value.length < MIN_PASSWORD) throw new Error("weak_password");
+    if (new TextEncoder().encode(value).length > MAX_PASSWORD_BYTES) throw new Error("long_password");
+  }
+
+  function roleBadge(role) {
+    return el("span", { "class": "role-chip " + (role || "none") },
+      icon(role === "admin" ? "i-shield" : role ? "i-user" : "i-ban"),
+      role ? ROLE_NAME[role] : "بدون صلاحية");
+  }
+
+  function permissionList(role) {
+    var column = role === "admin" ? 1 : 2;
+    return el("ul", { "class": "perms" }, PERMISSIONS.map(function (p) {
+      var yes = p[column];
+      return el("li", { "class": yes ? "yes" : "no" }, icon(yes ? "i-check" : "i-close"),
+                el("span", null, p[0]), el("span", { "class": "sr" }, yes ? " (مسموح)" : " (غير مسموح)"));
+    }));
+  }
+
+  function rolesTable() {
+    function mark(yes) {
+      return el("td", { "class": yes ? "yes" : "no" }, icon(yes ? "i-check" : "i-close"),
+                el("span", { "class": "sr" }, yes ? "نعم" : "لا"));
+    }
+    return el("table", { "class": "roles" },
+      el("thead", null, el("tr", null, el("th", null, el("span", { "class": "sr" }, "الإجراء")),
+                                       el("th", null, "مدير"), el("th", null, "مستخدم"))),
+      el("tbody", null, PERMISSIONS.map(function (p) {
+        return el("tr", null, el("th", { scope: "row" }, p[0]), mark(p[1]), mark(p[2]));
+      })));
+  }
+
+  // ---------------------------------------------------------------- accounts
+  async function loadAccounts() {
+    var source = state.source;
+    if (!source || !isAdmin()) return;
+    var problem = "";
+    try {
+      var got = await Promise.all([source.members(), source.auditLog(AUDIT_ROWS)]);
+      if (state.source !== source || !isAdmin()) return;
+      state.accounts = got[0];
+      state.audit = got[1];
+    } catch (err) {
+      if (state.source !== source) return;
+      problem = errorText(err);
+    }
+    var note = $("accounts-error");
+    note.hidden = !problem;
+    note.textContent = problem;
+    renderAccounts();
+    renderAudit();
+  }
+
+  function renderAccounts() {
+    var body = clear($("accounts-body")), list = state.accounts;
+    if (!list) {
+      body.appendChild(el("tr", null, el("td", { colspan: "4", "class": "empty" }, "جارٍ التحميل…")));
+      return;
+    }
+    var admins = list.filter(function (a) { return a.role === "admin"; }).length;
+    var members = list.filter(function (a) { return a.role === "member"; }).length;
+    var none = list.length - admins - members;
+    $("accounts-count").textContent = count(list.length, "حساب واحد", "حسابان", "حسابات", "حسابًا") +
+      ": مدير " + n(admins) + " · مستخدم " + n(members) + (none ? " · بدون صلاحية " + n(none) : "");
+    list.forEach(function (a) {
+      body.appendChild(el("tr", null,
+        el("td", null, el("bdi", { "class": "email" }, a.email),
+           a.is_me ? el("span", { "class": "you" }, "أنت") : null),
+        el("td", null, a.is_me ? roleBadge(a.role) : roleSelect(a)),
+        el("td", { "class": "when who" }, a.last_sign_in_at ? when(Date.parse(a.last_sign_in_at))
+                                                            : el("span", { "class": "muted" }, "لم يدخل بعد")),
+        el("td", null, a.is_me ? el("span", { "class": "muted" }, "من «حسابي»")
+          : el("span", { "class": "row-actions" },
+              el("button", { "class": "link", type: "button", onclick: function () { passwordSheet(a); } },
+                 icon("i-key"), "كلمة مرور"),
+              el("button", { "class": "link danger", type: "button", onclick: function () { deleteSheet(a); } },
+                 icon("i-trash"), "حذف")))));
+    });
+  }
+
+  function roleSelect(account) {
+    var select = el("select", { "class": "role-select", "aria-label": "صلاحية " + account.email },
+      account.role ? null : el("option", { value: "", selected: true, disabled: true }, "بدون صلاحية"),
+      el("option", { value: "member", selected: account.role === "member" }, ROLE_NAME.member),
+      el("option", { value: "admin", selected: account.role === "admin" }, ROLE_NAME.admin));
+    select.addEventListener("change", function () { roleSheet(account, select.value); });
+    return select;
+  }
+
+  function auditLine(a) {
+    var who = el("bdi", null, a.actor_email || "—");
+    var whom = el("bdi", null, a.target_email || "حساب محذوف");
+    var was = ROLE_NAME[a.old_role] || a.old_role || "", now = ROLE_NAME[a.new_role] || a.new_role || "";
+    switch (a.action) {
+      case "member.add": return [who, " منح ", whom, " صلاحية «" + now + "»"];
+      case "member.role": return [who, " غيّر صلاحية ", whom, " من «" + was + "» إلى «" + now + "»"];
+      case "member.remove": return [who, " حذف حساب ", whom, " (كان «" + was + "»)"];
+      case "password.reset": return [who, " وضع كلمة مرور جديدة لـ ", whom];
+      default: return [who, " " + a.action + " ", whom];
+    }
+  }
+
+  function renderAudit() {
+    var host = clear($("audit")), list = state.audit || [];
+    if (!list.length) {
+      if (state.audit) host.appendChild(el("li", { "class": "empty" }, "لا توجد تغييرات بعد"));
+      return;
+    }
+    list.forEach(function (a) {
+      var t = Date.parse(a.ts);
+      host.appendChild(el("li", null, icon(AUDIT_ICON[a.action] || "i-gear"),
+        add(el("span"), auditLine(a)),
+        el("time", { "class": "muted", datetime: a.ts, title: F_FULL.format(t) }, when(t))));
+    });
+  }
+
+  function roleChoice(initial) {
+    var name = "role-" + (++fieldSeq);
+    function option(role, text) {
+      return el("label", { "class": "choice" },
+        el("input", { type: "radio", name: name, value: role, checked: role === initial }),
+        el("span", null, el("b", null, ROLE_NAME[role] + " · " + ROLE_NOTE[role]), el("small", null, text)));
+    }
+    var node = el("fieldset", { "class": "choices" }, el("legend", null, "الصلاحية"),
+      option("member", "حالة الباب والأرقام والسجل، بدون صور الكاميرا وسجل النظام وإدارة الحسابات."),
+      option("admin", "كل شيء، ومنه صور الكاميرا وسجل النظام وإدارة الحسابات."));
+    return {
+      node: node,
+      value: function () {
+        var hit = node.querySelector("input:checked");
+        return hit ? hit.value : initial;
+      }
+    };
+  }
+
+  function addAccountSheet() {
+    var email = textField("email", "off");
+    var password = newPasswordField("كلمة مرور مؤقتة",
+      "انسخها وأعطها لصاحب الحساب؛ يستطيع تغييرها بعد الدخول من «حسابي».");
+    var choice = roleChoice("member");
+    password.input.value = newPassword();
+    openSheet({
+      title: "إضافة حساب",
+      body: [labelled("البريد الإلكتروني", email), password.node, choice.node],
+      submit: "إضافة الحساب",
+      onSubmit: async function () {
+        var address = email.value.trim().toLowerCase(), role = choice.value();
+        if (!EMAIL.test(address)) throw new Error("bad_email");
+        checkPassword(password.input.value);
+        await state.source.createAccount(address, password.input.value, role);
+        await loadAccounts();
+        return "أُضيف " + isolate(address) + " بصلاحية «" + ROLE_NAME[role] + "»";
+      }
+    });
+  }
+
+  function roleSheet(account, next) {
+    var grant = !account.role;
+    openSheet({
+      title: grant ? "منح صلاحية" : "تغيير الصلاحية",
+      body: [
+        el("p", null, grant ? "منح " : "تغيير صلاحية ", el("bdi", { "class": "email" }, account.email),
+           grant ? " صلاحية «" + ROLE_NAME[next] + "»؟"
+                 : " من «" + ROLE_NAME[account.role] + "» إلى «" + ROLE_NAME[next] + "»؟"),
+        el("p", { "class": "muted" }, "بهذه الصلاحية:"),
+        permissionList(next)
+      ],
+      submit: "تأكيد",
+      onSubmit: async function () {
+        await state.source.setRole(account.user_id, next);
+        await loadAccounts();
+        return "صلاحية " + isolate(account.email) + " الآن: " + ROLE_NAME[next];
+      },
+      onClose: renderAccounts            // a cancelled change puts the menu back
+    });
+  }
+
+  function passwordSheet(account) {
+    var password = newPasswordField("كلمة المرور الجديدة",
+      "انسخها وأعطها لصاحب الحساب؛ يستطيع تغييرها من «حسابي».");
+    password.input.value = newPassword();
+    openSheet({
+      title: "كلمة مرور جديدة",
+      body: [el("p", null, "للحساب ", el("bdi", { "class": "email" }, account.email)), password.node],
+      submit: "حفظ كلمة المرور",
+      onSubmit: async function () {
+        checkPassword(password.input.value);
+        await state.source.resetPassword(account.user_id, password.input.value);
+        loadAccounts();
+        return "تغيّرت كلمة مرور " + isolate(account.email);
+      }
+    });
+  }
+
+  function deleteSheet(account) {
+    openSheet({
+      title: "حذف حساب",
+      body: [
+        el("p", null, "حذف الحساب ", el("bdi", { "class": "email" }, account.email), " نهائيًا؟"),
+        el("p", { "class": "muted" }, "لن يستطيع الدخول إلى هذه اللوحة بعد الآن. سجل الباب وصوره لا تتأثر.")
+      ],
+      submit: "حذف الحساب",
+      danger: true,
+      onSubmit: async function () {
+        await state.source.deleteAccount(account.user_id);
+        await loadAccounts();
+        return "حُذف الحساب " + isolate(account.email);
+      }
+    });
+  }
+
+  function accountSheet() {
+    var me = state.me || {};
+    var fresh = textField("password", "new-password"), again = textField("password", "new-password");
+    openSheet({
+      title: "حسابي",
+      body: [
+        el("div", { "class": "me" }, el("bdi", { "class": "email" }, me.email || ""), roleBadge(state.role)),
+        el("p", { "class": "muted" }, "ما تستطيع فعله بهذه الصلاحية:"),
+        permissionList(state.role),
+        el("h3", { "class": "subhead" }, "تغيير كلمة المرور"),
+        labelled("كلمة المرور الجديدة", fresh, "8 أحرف على الأقل."),
+        labelled("أعد كتابتها", again)
+      ],
+      submit: "حفظ كلمة المرور",
+      onSubmit: async function () {
+        checkPassword(fresh.value);
+        if (fresh.value !== again.value) throw new Error("mismatch");
+        await state.source.changePassword(fresh.value);
+        return "تغيّرت كلمة مرورك";
+      }
+    });
+  }
+
+
   // ------------------------------------------------------------------ startup
-  function showGate(mode, message) {
+  /** mode: setup | login | denied (signed in, but no role, or the database is not ready). */
+  function showGate(mode, message, email) {
     timers.forEach(clearInterval);
     timers = [];
+    if (state.source && state.source.unsubscribe) state.source.unsubscribe();
+    state.source = null;
+    state.me = state.role = state.accounts = state.audit = null;
+    document.documentElement.removeAttribute("data-role");
+    closeSheet();
+    if ($("viewer").open) $("viewer").close();
     $("app").hidden = true;
     $("gate").hidden = false;
     $("gate-setup").hidden = mode !== "setup";
     $("gate-login").hidden = mode !== "login";
+    $("gate-denied").hidden = mode !== "denied";
     var error = $("login-error");
-    error.hidden = !message;
+    error.hidden = !message || mode !== "login";
     error.textContent = message || "";
+    $("denied-email").textContent = email || "";
+    $("denied-lead").hidden = $("denied-hint").hidden = !!message;
+    $("denied-error").hidden = !message || mode !== "denied";
+    $("denied-error").textContent = message || "";
   }
 
-  function start(source, demo) {
+  /** Signed in (or demo): ask the database who this is before showing anything. */
+  async function enter(source, demo, role) {
+    if (demo) source.useRole(role);
+    var me;
+    try {
+      me = await source.me();
+    } catch (err) {
+      if (/JWT|expired|401|no_session/i.test(String(err && err.message))) showGate("login", errorText(err));
+      else showGate("denied", errorText(err));
+      return;
+    }
+    if (!me) { showGate("login"); return; }
+    if (!me.role) { showGate("denied", "", me.email); return; }
+    start(source, demo, me);
+  }
+
+  async function signOut() {
+    var source = state.source || Cloud;
+    showGate("login");
+    try { await source.signOut(); } catch (err) { /* signed out locally anyway */ }
+  }
+
+  function applyRole(me) {
+    state.me = me;
+    state.role = me.role;
+    document.documentElement.setAttribute("data-role", me.role);
+    var chip = $("role-chip");
+    add(clear(chip), [icon(me.role === "admin" ? "i-shield" : "i-user"), ROLE_NAME[me.role]]);
+    chip.className = "role-chip " + me.role;
+    chip.title = ROLE_NOTE[me.role];
+    chip.hidden = false;
+    $("card-gallery").hidden = !isAdmin();
+    $("card-accounts").hidden = !isAdmin();
+    $("log-photo-head").hidden = !isAdmin();
+    $("denied-note").textContent = isAdmin() ? "رمز خاطئ، بصمة أو وجه غير معروف، PIN خاطئ"
+                                             : "رمز خاطئ، بصمة أو وجه غير معروف";
+    if (!isAdmin()) {
+      state.accounts = state.audit = null;
+      if ($("viewer").open) $("viewer").close();
+    }
+  }
+
+  function start(source, demo, me) {
     state.source = source;
     state.demo = !!demo;
+    state.accounts = state.audit = null;
+    applyRole(me);
     $("gate").hidden = true;
     $("app").hidden = false;
     $("logout").hidden = state.demo;
     $("subtitle").textContent = state.demo ? "لوحة المتابعة · عرض تجريبي" : "لوحة المتابعة";
+    $("roles-table").replaceChildren(rolesTable());
     setRange(state.range);
     source.subscribe(onLiveEvent, function (status) { state.status = status; renderDevice(); },
                      function (live) { $("live").hidden = !live; });
@@ -1114,11 +1776,13 @@
     });
     $("refresh").addEventListener("click", load);
     $("theme").addEventListener("click", toggleTheme);
-    $("logout").addEventListener("click", async function () {
-      try { await state.source.signOut(); } catch (err) { /* signed out locally anyway */ }
-      showGate("login");
-    });
-    $("demo-button").addEventListener("click", function () { start(Demo, true); });
+    $("logout").addEventListener("click", signOut);
+    $("denied-logout").addEventListener("click", signOut);
+    $("demo-button").addEventListener("click", function () { enter(Demo, true, "admin"); });
+    $("demo-member").addEventListener("click", function () { enter(Demo, true, "member"); });
+    $("account").addEventListener("click", accountSheet);
+    $("account-add").addEventListener("click", addAccountSheet);
+    bindSheet();
     $("gate-login").addEventListener("submit", async function (event) {
       event.preventDefault();
       var button = event.target.querySelector("button");
@@ -1126,7 +1790,7 @@
       try {
         await Cloud.signIn($("login-email").value.trim(), $("login-password").value);
         $("login-password").value = "";
-        start(Cloud, false);
+        await enter(Cloud, false);
       } catch (err) {
         showGate("login", errorText(err));
       } finally {
@@ -1164,11 +1828,11 @@
     applyTheme(params.get("theme") || stored);
     if (RANGE_DAYS[params.get("range")]) state.range = params.get("range");
     bind();
-    if (params.has("demo")) { start(Demo, true); return; }
+    if (params.has("demo")) { enter(Demo, true, params.get("demo") === "member" ? "member" : "admin"); return; }
     if (!CFG.url || !CFG.key || !window.supabase) { showGate("setup"); return; }
     try {
       Cloud.init();
-      if (await Cloud.session()) start(Cloud, false);
+      if (await Cloud.session()) await enter(Cloud, false);
       else showGate("login");
     } catch (err) {
       showGate("login", errorText(err));

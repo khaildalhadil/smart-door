@@ -35,6 +35,9 @@
     <g id="i-prev"><path d="M9 6l6 6-6 6"/></g>
     <g id="i-next"><path d="M15 6l-6 6 6 6"/></g>
     <g id="i-table"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M10 5v14"/></g>
+    <g id="i-shield"><path d="M12 3l8 3v6c0 4.500-3.400 8-8 9-4.600-1-8-4.500-8-9V6z"/><path d="M9 12l2 2 4-4"/></g>
+    <g id="i-plus"><path d="M12 5v14M5 12h14"/></g>
+    <g id="i-trash"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></g>
   </defs>
 </svg>
 
@@ -50,10 +53,14 @@
       <p class="lead">الصفحة جاهزة، وباقي ربطها بقاعدة البيانات.</p>
       <ol class="steps">
         <li>أنشئ مشروعًا مجانيًا في <span dir="ltr">supabase.com</span> ونفّذ الملف <code dir="ltr">supabase/schema.sql</code> من SQL Editor.</li>
+        <li>أنشئ حسابك من <span dir="ltr">Authentication → Users → Add user</span>، ثم اجعله مديرًا (القسم 9 في آخر الملف).</li>
+        <li>انشر الدالة <code dir="ltr">door-accounts</code> لإضافة الحسابات من الصفحة (README).</li>
         <li>ضع <code dir="ltr">Project URL</code> والمفتاح <code dir="ltr">publishable</code> في الملف <code dir="ltr">web/config.js</code>.</li>
-        <li>أنشئ حسابك من <span dir="ltr">Authentication → Users → Add user</span> ثم حدّث هذه الصفحة.</li>
       </ol>
-      <button id="demo-button" class="button primary" type="button">عرض تجريبي ببيانات وهمية</button>
+      <div class="demo-buttons">
+        <button id="demo-button" class="button primary" type="button">عرض تجريبي بصلاحية مدير</button>
+        <button id="demo-member" class="button" type="button">عرض تجريبي بصلاحية مستخدم</button>
+      </div>
     </div>
 
     <form id="gate-login" hidden>
@@ -67,6 +74,13 @@
       <p id="login-error" class="form-error" role="alert" hidden></p>
       <button class="button primary" type="submit">دخول</button>
     </form>
+
+    <div id="gate-denied" hidden>
+      <p id="denied-lead" class="lead">الحساب <bdi id="denied-email" class="email"></bdi> مسجّل الدخول، لكن ليست له صلاحية على هذه اللوحة.</p>
+      <p id="denied-hint" class="muted">اطلب من مدير الباب أن يضيفك من قسم «الحسابات والصلاحيات».</p>
+      <p id="denied-error" class="form-error" role="alert" hidden></p>
+      <button id="denied-logout" class="button" type="button">تسجيل الخروج</button>
+    </div>
   </section>
 </main>
 
@@ -77,7 +91,7 @@
       <svg class="icon icon-lg" viewBox="0 0 24 24"><use href="#i-lock"/></svg>
       <div>
         <h1>القفل الذكي</h1>
-        <p id="subtitle" class="muted">لوحة المتابعة</p>
+        <p class="brand-sub"><span id="subtitle" class="muted">لوحة المتابعة</span><span id="role-chip" class="role-chip" hidden></span></p>
       </div>
     </div>
     <div class="topbar-actions">
@@ -87,6 +101,9 @@
       </button>
       <button id="theme" class="button ghost" type="button" title="فاتح / داكن" aria-label="تبديل الوضع الفاتح والداكن">
         <svg class="icon" viewBox="0 0 24 24"><use href="#i-theme"/></svg>
+      </button>
+      <button id="account" class="button ghost" type="button" title="حسابي">
+        <svg class="icon" viewBox="0 0 24 24"><use href="#i-user"/></svg><span class="hide-narrow">حسابي</span>
       </button>
       <button id="logout" class="button ghost" type="button" title="خروج">
         <svg class="icon" viewBox="0 0 24 24"><use href="#i-logout"/></svg><span class="hide-narrow">خروج</span>
@@ -160,7 +177,7 @@
     <figure class="card" id="card-denied">
       <figcaption>
         <h2><svg class="icon status-critical" viewBox="0 0 24 24"><use href="#i-ban"/></svg><span id="denied-title">المحاولات المرفوضة يوميًا</span></h2>
-        <p class="muted">رمز خاطئ، بصمة أو وجه غير معروف، PIN خاطئ</p>
+        <p class="muted" id="denied-note">رمز خاطئ، بصمة أو وجه غير معروف، PIN خاطئ</p>
       </figcaption>
       <div class="chart" id="denied-chart" tabindex="0" role="img"></div>
       <details class="table-view"><summary><svg class="icon" viewBox="0 0 24 24"><use href="#i-table"/></svg>عرض كجدول</summary><div id="denied-table"></div></details>
@@ -191,7 +208,7 @@
       </div>
       <div class="table-wrap">
         <table class="log">
-          <thead><tr><th>الوقت</th><th>النوع</th><th>الوصف</th><th>الشخص</th><th>صورة</th></tr></thead>
+          <thead><tr><th>الوقت</th><th>النوع</th><th>الوصف</th><th class="who">الشخص</th><th id="log-photo-head">صورة</th></tr></thead>
           <tbody id="log-body"></tbody>
         </table>
       </div>
@@ -200,6 +217,32 @@
         <span id="log-page" class="muted"></span>
         <button id="log-next" class="button" type="button">الأقدم</button>
       </div>
+    </section>
+
+    <!-- Admins only; the database refuses everyone else anyway. -->
+    <section class="card" id="card-accounts" hidden>
+      <div class="section-head">
+        <div>
+          <h2><svg class="icon" viewBox="0 0 24 24"><use href="#i-shield"/></svg>الحسابات والصلاحيات</h2>
+          <p class="muted" id="accounts-count">من يدخل هذه اللوحة، وبأي صلاحية</p>
+        </div>
+        <button id="account-add" class="button primary" type="button">
+          <svg class="icon" viewBox="0 0 24 24"><use href="#i-plus"/></svg>إضافة حساب
+        </button>
+      </div>
+      <p id="accounts-error" class="banner error" role="alert" hidden></p>
+      <div class="table-wrap">
+        <table class="log accounts">
+          <thead><tr><th>الحساب</th><th>الصلاحية</th><th class="who">آخر دخول</th><th><span class="sr">إجراءات</span></th></tr></thead>
+          <tbody id="accounts-body"></tbody>
+        </table>
+      </div>
+      <details class="table-view">
+        <summary><svg class="icon" viewBox="0 0 24 24"><use href="#i-table"/></svg>ماذا تستطيع كل صلاحية؟</summary>
+        <div id="roles-table"></div>
+      </details>
+      <h3 class="subhead">آخر التغييرات على الحسابات</h3>
+      <ul id="audit" class="audit"></ul>
     </section>
   </main>
 
@@ -224,6 +267,26 @@
     </button>
   </div>
 </dialog>
+
+<!-- Small forms: add an account, a new password, a confirmation, my account -->
+<dialog id="sheet" class="sheet" aria-labelledby="sheet-title">
+  <form id="sheet-form" novalidate>
+    <div class="sheet-head">
+      <h2 id="sheet-title"></h2>
+      <button id="sheet-x" class="button ghost" type="button" aria-label="إغلاق">
+        <svg class="icon" viewBox="0 0 24 24"><use href="#i-close"/></svg>
+      </button>
+    </div>
+    <div id="sheet-body" class="sheet-body"></div>
+    <p id="sheet-error" class="form-error" role="alert" hidden></p>
+    <div class="sheet-foot">
+      <button id="sheet-submit" class="button primary" type="submit">حفظ</button>
+      <button id="sheet-cancel" class="button" type="button">إلغاء</button>
+    </div>
+  </form>
+</dialog>
+
+<p id="toast" class="toast" role="status" aria-live="polite" hidden></p>
 
 <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
 

@@ -242,18 +242,46 @@ handle_message(door, text, sender, send_text, send_image, llm=ask_model)  # llm 
 
 `app/cloud.py` ينسخ السجل والصور إلى Supabase، والصفحة `web/` تعرضها: أرقام، رسوم، تحليل مكتوب، صور، وسجل قابل للبحث. بدون مفاتيح يبقى كل شيء على الـ Pi ويُرفع لاحقًا، وكذلك عند انقطاع الإنترنت.
 
-1. أنشئ مشروعًا في supabase.com، ثم **SQL Editor**: الصق `supabase/schema.sql` بعد تغيير البريد في آخر سطر إلى بريدك، واضغط Run.
-2. **Authentication ← Users ← Add user**: أنشئ حسابك بنفس البريد. ويُفضّل إطفاء التسجيل العام (Sign In / Providers ← Allow new users to sign up).
-3. على الـ Pi أضف إلى `.env` (المفتاح **السري**، من Settings ← API Keys):
+### الحسابات والصلاحيات
+
+الدخول للصفحة بالبريد وكلمة المرور (Supabase Auth). لكل حساب صلاحية من اثنتين، والقرار في قاعدة البيانات نفسها (Row Level Security في `supabase/schema.sql`)، فلا تتجاوزه الصفحة حتى لو عُدّلت أو طُلبت البيانات مباشرة:
+
+| | مدير `admin` | مستخدم `member` |
+|---|:---:|:---:|
+| حالة الباب الآن | ✓ | ✓ |
+| الأرقام والرسوم وتحليل الفترة | ✓ | ✓ |
+| سجل الدخول، والمحاولات المرفوضة (رمز، وجه، بصمة)، والجرس، والإنذارات | ✓ | ✓ |
+| تغيير كلمة مرور حسابه | ✓ | ✓ |
+| صور الكاميرا | ✓ | ✗ |
+| أوامر واتساب، وPIN اللوحة الخاطئ، وسجل الإدارة والنظام | ✓ | ✗ |
+| إدارة الحسابات (إضافة، تغيير الصلاحية، كلمة مرور جديدة، حذف) وسجل تغييراتها | ✓ | ✗ |
+
+- حساب بدون صلاحية (مثلًا شخص سجّل نفسه) لا يرى شيئًا إطلاقًا.
+- المدير لا يغيّر صلاحية نفسه ولا يحذف حسابه، فيبقى دائمًا مدير واحد على الأقل. تغييرات الحسابات تمر واحدًا واحدًا (قفل في قاعدة البيانات)، فلا يستطيع مديران إنزال بعضهما في اللحظة نفسها.
+- كل تغيير على الحسابات يُسجَّل في `door_audit` (من، ماذا، لمن، متى) ويظهر للمدير في الصفحة.
+- الصفحة تسأل عن الصلاحية مع كل تحديث (كل دقيقة)، فتغيير المدير يصل للصفحات المفتوحة خلال دقيقة.
+- إضافة الحسابات وحذفها ووضع كلمة مرور جديدة تمر عبر دالة Edge اسمها `door-accounts` (`supabase/functions/door-accounts/`)، لأنها تحتاج المفتاح السري. الدالة تسأل قاعدة البيانات أولًا، بتوكن الطالب نفسه، هل هو مدير.
+
+### التجهيز
+
+1. أنشئ مشروعًا في supabase.com، ثم **SQL Editor**: الصق `supabase/schema.sql` كاملًا واضغط Run.
+2. **Authentication ← Users ← Add user**: أنشئ حسابك (مع Auto Confirm User). ثم في SQL Editor شغّل القسم 9 من آخر الملف بعد وضع بريدك مكان `you@example.com`: صار حسابك مديرًا، والباقون تضيفهم من الصفحة.
+3. أطفئ التسجيل العام: **Authentication ← Sign In / Providers ← Allow new users to sign up**.
+4. انشر دالة الحسابات بدون فحص JWT من المنصة (الدالة تفحص الطالب بنفسها، وفحص المنصة لا يفهم المفاتيح الجديدة):
+   ```
+   supabase functions deploy door-accounts --no-verify-jwt
+   ```
+   أو من لوحة Supabase: **Edge Functions ← Deploy a new function ← Via Editor** باسم `door-accounts` وبالملفين `index.ts` و`handler.ts`، ثم أطفئ **Verify JWT** في إعداداتها.
+5. على الـ Pi أضف إلى `.env` (المفتاح **السري**، من Settings ← API Keys):
    ```
    SUPABASE_URL=https://xxxxxxxx.supabase.co
    SUPABASE_SERVICE_KEY=sb_secret_...
    ```
    ثم `python3 tools/cloud_check.py` للفحص، و`systemctl --user restart smartlock`.
-4. في `web/config.js` ضع الـ URL والمفتاح **publishable** (ليس السري أبدًا).
-5. افتح `web/index.html` في المتصفح، أو ارفع مجلد `web/` على أي استضافة ثابتة (Netlify Drop، Vercel، GitHub Pages).
+6. في `web/config.js` ضع الـ URL والمفتاح **publishable** (ليس السري أبدًا).
+7. افتح `web/index.html` في المتصفح، أو ارفع مجلد `web/` على أي استضافة ثابتة (Netlify Drop، Vercel، GitHub Pages).
 
-للمعاينة بدون Supabase: `web/index.html?demo`. الصفحة للقراءة فقط: لا تفتح الباب.
+للمعاينة بدون Supabase: `web/index.html?demo` (بصلاحية مدير) أو `web/index.html?demo=member` (بصلاحية مستخدم). الصفحة لا تفتح الباب ولا تغيّر بياناته.
 
 ## تنبيهات الحريق والدخان
 
@@ -336,8 +364,9 @@ app/history.py          السجل المنظّم (data/history.db) والصور
 app/doorbell.py         الجرس: سؤال المالك على واتساب
 app/cloud.py            المزامنة مع Supabase
 bot/door_bot.py         ملف جاهز لطرف البوت
-supabase/schema.sql     جداول وصلاحيات Supabase
-web/                    صفحة المتابعة
+supabase/schema.sql     جداول Supabase، والصلاحيتان (RLS)، ودوال الحسابات
+supabase/functions/door-accounts/   دالة Edge: إضافة وحذف الحسابات وكلمة المرور (للمدير)
+web/                    صفحة المتابعة (دخول + صلاحيتان)
 app/ui/                 الواجهة (Tkinter)
 tools/                  أدوات الطرفية
 deploy/                 التشغيل التلقائي (smartlock.service)

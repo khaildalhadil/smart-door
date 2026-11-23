@@ -326,6 +326,80 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 
 .foot { margin-top: 22px; text-align: center; }
 
+/* ------------------------------------------------------------------- roles */
+.demo-buttons { display: grid; gap: 8px; }
+.brand-sub { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.role-chip { display: inline-flex; align-items: center; gap: 4px; padding: 0 9px; min-height: 22px;
+             border-radius: 999px; font-size: 0.8rem; font-weight: 650; white-space: nowrap;
+             background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
+.role-chip .icon { width: 14px; height: 14px; }
+.role-chip.admin .icon { color: var(--accent); }
+.role-chip.member .icon, .role-chip.none .icon { color: var(--muted); }
+.role-chip.none { color: var(--text-2); }
+.banner a { color: var(--accent); font-weight: 650; }
+.email { direction: ltr; unicode-bidi: isolate; overflow-wrap: anywhere; font-weight: 600; }
+.you { margin-inline-start: 8px; padding: 0 7px; border-radius: 999px; font-size: 0.78rem;
+       font-weight: 650; color: var(--text-2); background: var(--surface-2); }
+.accounts td { vertical-align: middle; }
+.row-actions { display: inline-flex; gap: 14px; white-space: nowrap; }
+.log .link.danger { color: var(--critical-text); }
+.role-select { font: inherit; font-weight: 600; color: var(--text); background: var(--page);
+               border: 1px solid var(--axis); border-radius: 8px; padding: 3px 8px; min-height: 34px; }
+.subhead { font-size: 0.95rem; font-weight: 650; margin: 18px 0 8px; }
+.audit { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.audit li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: start;
+            color: var(--text-2); font-size: 0.92rem; }
+.audit li.empty { display: block; padding: 8px 0; text-align: start; }
+.audit .icon { width: 16px; height: 16px; margin-top: 4px; color: var(--muted); }
+.audit bdi { color: var(--text); font-weight: 600; }
+.audit time { white-space: nowrap; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+.roles td { text-align: center; }
+.roles .icon { width: 16px; height: 16px; vertical-align: -3px; }
+.roles td.yes .icon, .perms li.yes .icon { color: var(--good); }
+.roles td.no .icon, .perms li.no .icon { color: var(--muted); }
+.perms { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.perms li { display: flex; align-items: center; gap: 8px; color: var(--text); }
+.perms li.no { color: var(--muted); }
+.perms .icon { width: 16px; height: 16px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%);
+      white-space: nowrap; }
+
+/* Small form dialog */
+.sheet { border: 0; padding: 0; border-radius: 16px; background: var(--surface); color: var(--text);
+         width: min(480px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; }
+.sheet::backdrop { background: rgba(0, 0, 0, 0.55); }
+.sheet form { display: grid; gap: 16px; padding: 16px 20px 20px; }
+.sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sheet-head h2 { font-size: 1.05rem; }
+.sheet-body { display: grid; gap: 14px; }
+.sheet-body p { color: var(--text-2); }
+.sheet-foot { display: flex; gap: 8px; flex-wrap: wrap; }
+.sheet-foot .button { min-width: 110px; }
+.field { display: grid; gap: 5px; }
+.field label { font-weight: 600; font-size: 0.92rem; }
+.field small { font-size: 0.82rem; }
+.input { font: inherit; color: var(--text); background: var(--page); width: 100%; min-width: 0;
+         border: 1px solid var(--axis); border-radius: 9px; padding: 7px 12px; min-height: 40px; }
+.input-row { display: flex; gap: 8px; }
+.input-row .input { flex: 1; }
+.choices { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; min-width: 0; }
+.choices legend { font-weight: 600; font-size: 0.92rem; padding: 0; margin-bottom: 5px; }
+.choice { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start;
+          padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
+.choice:has(input:checked) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.choice input { margin: 5px 0 0; accent-color: var(--accent); }
+.choice b { display: block; font-weight: 650; }
+.choice small { display: block; color: var(--text-2); font-size: 0.85rem; }
+.me { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+      padding: 10px 12px; background: var(--surface-2); border-radius: 10px; }
+.button.danger { background: var(--critical); color: #fff; border-color: transparent; }
+.button.danger:hover { filter: brightness(1.08); background: var(--critical); }
+
+.toast { position: fixed; z-index: 60; bottom: 20px; left: 50%; transform: translateX(-50%);
+         max-width: calc(100vw - 32px); padding: 10px 16px; border-radius: 10px;
+         background: var(--text); color: var(--page); font-weight: 600;
+         box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); }
+
 /* -------------------------------------------------------------- responsive */
 @media (max-width: 1020px) {
   .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -342,6 +416,9 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
   .viewer-body { grid-template-columns: minmax(0, 1fr); }
   .viewer img { max-height: 56vh; }
   .log td.who, .log th.who { display: none; }
+  .audit li { grid-template-columns: 18px minmax(0, 1fr); }
+  .audit time { grid-column: 2; }
+  .row-actions { flex-direction: column; gap: 6px; }
   #log-search { width: 100%; }
   .log-tools { width: 100%; }
 }
