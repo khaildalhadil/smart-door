@@ -1,4 +1,4 @@
-"""Screens behind sign-in: menu, users, fingerprints, faces, event log, system."""
+"""Screens behind sign-in: menu, users, fingerprints, faces, cards, event log, system."""
 
 from __future__ import annotations
 
@@ -138,6 +138,38 @@ def remove_face(app, face_id: str, back) -> None:
              yes_text="Remove", on_yes=really, on_no=lambda: back(None))
 
 
+def start_card_enrolment(app, user_id: str | None, back, new_name: str = "") -> None:
+    """Wait for a card on the reader, or explain why there is no reader.
+
+    With ``user_id=None`` the door-only user ``new_name`` is created once the
+    card is read, so a cancelled enrolment leaves nothing behind.
+    """
+    cards = app.ctx.cards
+    if cards is None or not cards.available:
+        app.show(InfoScreen, title="Card reader",
+                 text=cards.status_text() if cards else "No card reader.",
+                 on_back=lambda: back(None))
+        return
+    app.show(CardEnrollScreen, user_id=user_id, new_name=new_name, back=back)
+
+
+def remove_card(app, record_id: str, back) -> None:
+    found = app.ctx.users.find_card(record_id)
+    if found is None:
+        back(None)
+        return
+    user, card = found
+
+    def really():
+        app.ctx.users.delete_card(record_id)
+        back((f"Card …{card.tag} removed from {user.name}.", "ok"))
+
+    app.show(ConfirmPrompt, title="Remove card",
+             message=f"Remove card …{card.tag} from {user.name}? It will no longer open "
+                     "the door. Do this at once for a lost card.",
+             yes_text="Remove", on_yes=really, on_no=lambda: back(None))
+
+
 # ----------------------------------------------------------------------- menu
 class MenuScreen(Screen):
     requires = "user"
@@ -154,6 +186,7 @@ class MenuScreen(Screen):
         # (or records exist).
         sensor_on = self.ctx.fingerprints.available
         faces_on = self.ctx.faces.available
+        cards_on = self.ctx.cards is not None and self.ctx.cards.available
         if user.is_admin:
             tiles = [
                 ("Unlock door", "ok", self._unlock),
@@ -163,6 +196,8 @@ class MenuScreen(Screen):
                 tiles.append(("Fingerprints", "default", lambda: go(FingerprintsScreen)))
             if faces_on or self.ctx.users.all_faces():
                 tiles.append(("Faces", "default", lambda: go(FacesScreen)))
+            if cards_on or self.ctx.users.all_cards():
+                tiles.append(("Cards", "default", lambda: go(CardsScreen)))
             tiles += [
                 ("Door code", "default", self._change_passcode),
                 ("Event log", "default", lambda: go(EventLogScreen)),
@@ -173,9 +208,10 @@ class MenuScreen(Screen):
         else:
             tiles = [("Unlock door", "ok", self._unlock)]
             mine = (["fingerprints"] if sensor_on or user.fingerprints else []) + (
-                ["face"] if faces_on or user.faces else [])
+                ["face"] if faces_on or user.faces else []) + (
+                ["cards"] if user.cards else [])
             if mine:
-                tiles.append(("My " + " & ".join(mine), "default",
+                tiles.append(("My " + ", ".join(mine), "default",
                               lambda: go(UserScreen, user_id=user.id)))
             tiles += [
                 ("Change my PIN", "default", self._change_my_pin),
@@ -252,6 +288,7 @@ class UsersScreen(Screen):
         users = self.ctx.users.all_users()
         sensor_on = self.ctx.fingerprints.available
         faces_on = self.ctx.faces.available
+        cards_on = self.ctx.cards is not None and self.ctx.cards.available
         rows = []
         for u in users:
             n = len(u.fingerprints)
@@ -262,6 +299,8 @@ class UsersScreen(Screen):
                 text += f"  ·  {n} finger{'s' if n != 1 else ''}"
             if faces_on or u.faces:
                 text += f"  ·  {len(u.faces)} face{'s' if len(u.faces) != 1 else ''}"
+            if cards_on or u.cards:
+                text += f"  ·  {len(u.cards)} card{'s' if len(u.cards) != 1 else ''}"
             if not u.enabled:
                 text += "  ·  disabled"
             rows.append((u.id, text))
@@ -300,7 +339,7 @@ class UsersScreen(Screen):
                           "in to unlock the door"
                           + (" and manage their own fingerprints."
                              if self.ctx.fingerprints.available else ".")
-                          + " Door only: no sign-in, just a fingerprint or face.",
+                          + " Door only: no sign-in, just a fingerprint, face or card.",
                      on_choose=lambda role: got_role(name, role), on_cancel=back)
 
         def got_role(name, role):
@@ -361,11 +400,16 @@ class UserScreen(Screen):
         for face in user.faces:
             rows.append((("face", face.id), f"Face  ·  {face.created[:16]}  ·  "
                                             f"{len(face.samples)} pictures"))
+        for card in user.cards:
+            rows.append((("card", card.id), f"Card …{card.tag}"
+                                            + (f"  {card.label}" if card.label else "")
+                                            + f"  ·  {card.created[:10]}"))
         sensor_on = self.ctx.fingerprints.available
         faces_on = self.ctx.faces.available
+        cards_on = self.ctx.cards is not None and self.ctx.cards.available
         if not rows:
-            rows = [(None, "No fingerprint or face enrolled yet." if sensor_on or faces_on
-                     else "No fingerprint sensor or camera in use.")]
+            rows = [(None, "No fingerprint, face or card yet." if sensor_on or faces_on
+                     or cards_on else "No fingerprint sensor, camera or card reader in use.")]
         self.list.set_items(rows)
         self.msg = self.banner(left)
         self.msg.pack(fill="x", pady=(4, 0))
@@ -375,7 +419,9 @@ class UserScreen(Screen):
             side_button(col, "Add fingerprint", self._enrol, kind="primary")
         if faces_on and self.is_admin:
             side_button(col, "Add face", self._enrol_face, kind="primary")
-        if user.fingerprints or user.faces:
+        if cards_on and self.is_admin:
+            side_button(col, "Add card", self._enrol_card, kind="primary")
+        if user.fingerprints or user.faces or user.cards:
             side_button(col, "Remove", self._remove)
         side_button(col, "Change PIN" if user.has_pin else "Set PIN", self._set_pin)
         if self.is_admin:
@@ -398,14 +444,20 @@ class UserScreen(Screen):
     def _enrol_face(self) -> None:
         start_face_enrolment(self.app, self.user_id, self._here)
 
+    def _enrol_card(self) -> None:
+        start_card_enrolment(self.app, self.user_id, self._here)
+
     def _remove(self) -> None:
         key = self.list.selected_key()
         if key is None:
-            self.msg.show("Select a fingerprint or face first.", "warn")
+            self.msg.show("Select a fingerprint, face or card first.", "warn")
             return
         kind, ident = key
         if kind == "face":
             remove_face(self.app, ident, self._here)
+            return
+        if kind == "card":
+            remove_card(self.app, ident, self._here)
             return
         slot = ident
         self.app.show(ConfirmPrompt, title="Remove fingerprint",
@@ -439,10 +491,11 @@ class UserScreen(Screen):
 
     def _delete(self) -> None:
         user = self.user
-        n, m = len(user.fingerprints), len(user.faces)
+        n, m, c = len(user.fingerprints), len(user.faces), len(user.cards)
         parts = ([f"{n} fingerprint template{'s' if n != 1 else ''}"] if n else []) + (
-            [f"{m} face{'s' if m != 1 else ''}"] if m else [])
-        extra = f" and erase {' and '.join(parts)}" if parts else ""
+            [f"{m} face{'s' if m != 1 else ''}"] if m else []) + (
+            [f"{c} card{'s' if c != 1 else ''}"] if c else [])
+        extra = f" and erase {', '.join(parts)}" if parts else ""
         self.app.show(ConfirmPrompt, title="Delete user",
                       message=f"Delete {user.name}{extra}? This cannot be undone.",
                       yes_text="Delete", on_yes=self._do_delete, on_no=self._here)
@@ -877,6 +930,170 @@ class FaceEnrollScreen(Screen):
         self._back((f"Face saved for {self.name}. The door now opens for it.", "ok"))
 
 
+# ---------------------------------------------------------------------- cards
+class CardsScreen(Screen):
+    requires = "admin"
+
+    def __init__(self, app, notice: tuple[str, str] | None = None):
+        super().__init__(app)
+        self.header("Cards", back=lambda: app.show(MenuScreen))
+        cards, users = self.ctx.cards, self.ctx.users
+        status = cards.status_text().splitlines()[0] if cards else "No card reader."
+        tk.Label(self, text=status, font=theme.FONT_SMALL, bg=theme.BG, fg=theme.MUTED,
+                 anchor="w").pack(fill="x", padx=theme.PAD + 2)
+        body = tk.Frame(self, bg=theme.BG)
+        body.pack(fill="both", expand=True, padx=theme.PAD, pady=(4, theme.PAD))
+        left = tk.Frame(body, bg=theme.BG)
+        left.pack(side="left", fill="both", expand=True)
+        self.list = TouchList(left, height=8)
+        self.list.pack(fill="both", expand=True)
+        self.msg = self.banner(left)
+        self.msg.pack(fill="x", pady=(4, 0))
+
+        rows, muted = [], []
+        for user, card in sorted(users.all_cards(), key=lambda p: p[0].name.casefold()):
+            text = (f"{user.name}  ·  card …{card.tag}"
+                    + (f"  {card.label}" if card.label else "")
+                    + f"  ·  {card.created[:10]}")
+            if not user.enabled:
+                text += "  ·  user disabled"
+                muted.append(len(rows))
+            rows.append((card.id, text))
+        if not rows:
+            rows = [(None, "No cards yet.")]
+        self.list.set_items(rows)
+        for i in muted:
+            self.list.item_colour(i, theme.MUTED)
+
+        col = side_column(body)
+        side_button(col, "Add card", self._enrol, kind="primary")
+        side_button(col, "Remove", self._remove)
+        if notice:
+            self.msg.show(*notice)
+
+    def _here(self, notice=None) -> None:
+        self.app.show(CardsScreen, notice=notice)
+
+    def _enrol(self) -> None:
+        app, users = self.app, self.ctx.users
+
+        def name_ok(name):
+            if not name:
+                return "Enter a name."
+            return "That name is already used." if users.by_name(name) else None
+
+        def chosen(uid):
+            if uid is None:
+                app.show(TextPrompt, title="New person's name", validate=name_ok,
+                         on_done=lambda name: start_card_enrolment(
+                             app, None, self._here, new_name=name),
+                         on_cancel=self._here)
+            else:
+                start_card_enrolment(app, uid, self._here)
+
+        app.show(ChoicePrompt, title="Add a card for…",
+                 options=[(u.name, u.id) for u in users.enabled_users()[:11]]
+                 + [("New person…", None)],
+                 columns=3, on_choose=chosen, on_cancel=self._here)
+
+    def _remove(self) -> None:
+        record_id = self.list.selected_key()
+        if record_id is None:
+            self.msg.show("Select a card first.", "warn")
+            return
+        remove_card(self.app, record_id, self._here)
+
+
+class CardEnrollScreen(Screen):
+    """"Hold the card on the reader" until one is read, or the time runs out."""
+
+    requires = "admin"
+    WAIT_SECONDS = 30
+
+    def __init__(self, app, user_id: str | None, back, new_name: str = ""):
+        super().__init__(app)
+        self.user_id, self._back = user_id, back
+        user = self.ctx.users.by_id(user_id) if user_id else None
+        self.name = user.name if user else new_name or "?"
+        self.keep_alive = True
+        self._token = None
+        self._job = None
+        self.header(f"Add card — {self.name}")
+        self.text = tk.Label(self, font=theme.FONT_TITLE, bg=theme.BG, fg=theme.TEXT,
+                             wraplength=700, justify="center")
+        self.text.pack(expand=True, fill="both", padx=theme.PAD)
+        self.sub = tk.Label(self, font=theme.FONT_BODY, bg=theme.BG, fg=theme.MUTED)
+        self.sub.pack(pady=(0, 8))
+        self.buttons = tk.Frame(self, bg=theme.BG, height=70)
+        self.buttons.pack(fill="x", side="bottom", padx=theme.PAD, pady=(0, theme.PAD))
+        self.buttons.pack_propagate(False)
+        self._start()
+
+    def destroy(self) -> None:
+        self._stop()
+        super().destroy()
+
+    def _stop(self) -> None:
+        if self._token is not None:
+            self.ctx.cards.release(self._token)
+            self._token = None
+        if self._job is not None:
+            self.after_cancel(self._job)
+            self._job = None
+
+    def _set_buttons(self, *specs) -> None:
+        for child in self.buttons.winfo_children():
+            child.destroy()
+        for text, cmd, kind in specs:
+            TouchButton(self.buttons, text, cmd, kind=kind).pack(
+                side="left", fill="both", expand=True, padx=4)
+
+    def _start(self) -> None:
+        self.text.configure(text="Hold the card on the reader", fg=theme.TEXT)
+        self._set_buttons(("Cancel", lambda: self._back(None), "danger"))
+        self._left = self.WAIT_SECONDS
+        self._token = self.ctx.cards.watch(lambda uid: self.app.post(self._read, uid),
+                                           include_present=True)
+        self._tick()
+
+    def _tick(self) -> None:
+        self._job = None
+        if not self.alive:
+            return
+        if self._left <= 0:
+            self._stop()
+            self._fail("No card was read. Hold it flat on the reader, within 3 cm.")
+            return
+        self.sub.configure(text=f"Waiting {self._left} s…")
+        self._left -= 1
+        self._job = self.after(1000, self._tick)
+
+    def _fail(self, message: str) -> None:
+        self.text.configure(text=message, fg=theme.DANGER_HI)
+        self.sub.configure(text="")
+        self._set_buttons(("Back", lambda: self._back(None), "default"),
+                          ("Try again", self._start, "primary"))
+
+    def _read(self, uid: bytes) -> None:
+        if not self.alive or self._token is None:
+            return
+        self._stop()
+        cards, users = self.ctx.cards, self.ctx.users
+        card_id, tag = cards.card_id(uid), cards.tag(uid)
+        found = users.find_card(card_id)
+        if found is not None:
+            self._fail(f"Card …{tag} already belongs to {found[0].name}.")
+            return
+        try:
+            if self.user_id is None:
+                self.user_id = users.add_user(self.name, None, ROLE_USER).id
+            users.add_card(self.user_id, card_id, tag)
+        except ValueError as exc:
+            self._fail(str(exc))
+            return
+        self._back((f"Card …{tag} saved for {self.name}. It now opens the door.", "ok"))
+
+
 # ------------------------------------------------------------------ event log
 class EventLogScreen(Screen):
     requires = "admin"
@@ -935,8 +1152,10 @@ class SystemScreen(Screen):
             f"Lockout now:  {f'{lockout:.0f} s' if lockout else 'none'}",
             f"Fingerprint:  {ctx.fingerprints.status_text().splitlines()[0]}",
             f"Face:         {ctx.faces.status_text().splitlines()[0]}",
+            f"Cards:        {ctx.cards.status_text().splitlines()[0]}" if ctx.cards else "",
             f"Config:       {cfg.path}",
         ]
+        lines = [line for line in lines if line]
         tk.Label(left, text="\n".join(lines), font=theme.FONT_LOG, bg=theme.SURFACE,
                  fg=theme.TEXT, justify="left", anchor="nw", wraplength=500,
                  padx=12, pady=10).pack(fill="both", expand=True)
@@ -979,8 +1198,10 @@ class SystemScreen(Screen):
     def _reset(self) -> None:
         self.ctx.passcode.reset()
         self.ctx.login.reset()
+        if self.ctx.cards is not None:
+            self.ctx.cards.limiter.reset()
         self.ctx.events.info("security.reset", f"lockouts cleared by {self.app.session.name}")
-        self._here(("Keypad and sign-in lockouts cleared.", "ok"))
+        self._here(("Keypad, sign-in and card lockouts cleared.", "ok"))
 
     def _sensor(self) -> None:
         fp, app = self.ctx.fingerprints, self.app

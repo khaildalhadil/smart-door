@@ -1,8 +1,9 @@
-"""User directory, the fingerprint-template registry and enrolled faces.
+"""User directory, the fingerprint-template registry, enrolled faces and cards.
 
 ``data/users.json`` holds the people allowed through the door and, for each of
-them, the sensor template slots enrolled to their fingers and the face
-embeddings captured by the camera (app/face.py; never a photo).  Login PINs
+them, the sensor template slots enrolled to their fingers, the face
+embeddings captured by the camera (app/face.py; never a photo) and their
+cards (app/nfc.py; a keyed hash of the card number, never the number).  Login PINs
 are stored as PBKDF2 digests, same scheme as the keypad passcode.  A plain user
 may have no PIN at all: then they cannot sign in, only open the door with a
 finger or their face.
@@ -55,6 +56,17 @@ class Face:
 
 
 @dataclass
+class Card:
+    """One NFC / RFID card or tag."""
+
+    card_id: str               # keyed hash of the UID (app/nfc.py card_id())
+    tag: str = ""              # last 4 hex digits, to tell cards apart
+    label: str = ""            # e.g. "blue key fob"
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    created: str = field(default_factory=_now)
+
+
+@dataclass
 class User:
     name: str
     role: str = ROLE_USER
@@ -65,6 +77,7 @@ class User:
     created: str = field(default_factory=_now)
     fingerprints: list[Fingerprint] = field(default_factory=list)
     faces: list[Face] = field(default_factory=list)
+    cards: list[Card] = field(default_factory=list)
 
     @property
     def is_admin(self) -> bool:
@@ -119,6 +132,16 @@ class UserStore:
                         )
                         for f in raw.get("faces", [])
                     ]
+                    cards = [
+                        Card(
+                            card_id=str(c["card_id"]),
+                            tag=str(c.get("tag", "")),
+                            label=str(c.get("label", "")),
+                            id=str(c.get("id") or uuid.uuid4().hex[:8]),
+                            created=str(c.get("created", _now())),
+                        )
+                        for c in raw.get("cards", [])
+                    ]
                     self._users.append(
                         User(
                             id=str(raw.get("id") or uuid.uuid4().hex[:12]),
@@ -130,6 +153,7 @@ class UserStore:
                             created=str(raw.get("created", _now())),
                             fingerprints=prints,
                             faces=faces,
+                            cards=cards,
                         )
                     )
                 except (KeyError, TypeError, ValueError):
@@ -388,4 +412,43 @@ class UserStore:
             self.save()
         if self.events:
             self.events.warning("face.delete", f"{user.name} (face {face_id})")
+        return found
+
+    # ------------------------------------------------------------------ cards
+    def all_cards(self) -> list[tuple[User, Card]]:
+        with self._lock:
+            return [(u, c) for u in self._users for c in u.cards]
+
+    def find_card(self, card_id: str) -> tuple[User, Card] | None:
+        """The owner of a card, by its keyed hash (``card_id``) or its record id."""
+        with self._lock:
+            return next(((u, c) for u in self._users for c in u.cards
+                         if c.card_id == card_id or c.id == card_id), None)
+
+    def add_card(self, user_id: str, card_id: str, tag: str, label: str = "") -> Card:
+        with self._lock:
+            user = self.by_id(user_id)
+            if user is None:
+                raise ValueError("No such user.")
+            found = self.find_card(card_id)
+            if found is not None:
+                raise ValueError(f"This card already belongs to {found[0].name}.")
+            card = Card(card_id=card_id, tag=tag, label=label.strip())
+            user.cards.append(card)
+            self.save()
+        if self.events:
+            self.events.info("card.add", f"{user.name} (card …{tag})")
+        return card
+
+    def delete_card(self, record_id: str) -> tuple[User, Card] | None:
+        with self._lock:
+            found = next(((u, c) for u in self._users for c in u.cards
+                          if c.id == record_id), None)
+            if found is None:
+                return None
+            user, card = found
+            user.cards = [c for c in user.cards if c.id != record_id]
+            self.save()
+        if self.events:
+            self.events.warning("card.delete", f"{user.name} (card …{card.tag})")
         return found

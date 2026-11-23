@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Smart Lock -- touch keypad, fingerprint and face door controller for Raspberry Pi.
+"""Smart Lock -- touch keypad, fingerprint, face and card door controller for Raspberry Pi.
 
     python3 main.py                      # kiosk mode, settings from config.ini
     python3 main.py --windowed           # normal window (desktop testing)
     python3 main.py --simulate           # never touch GPIO, even on a Pi
     python3 main.py --simulate-fingerprint
+    python3 main.py --simulate-card      # card = hex number in data/sim_card.txt
 
 The relay is forced to the locked level before the window opens and again on
 every exit path (normal quit, SIGTERM, Ctrl+C, unhandled exception).
@@ -34,6 +35,7 @@ from app.fingerprint import FingerprintService, SimulatedBackend
 from app.hazard import HazardMonitor
 from app.history import History
 from app.lock import LockController, SimulationBackend
+from app.nfc import CardService
 from app.recorder import Recorder
 from app.security import LoginLimiter, PasscodeManager
 from app.temp_codes import TempCodeStore
@@ -51,6 +53,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="simulate the relay; GPIO is never touched")
     p.add_argument("--simulate-fingerprint", action="store_true",
                    help="use the fake fingerprint sensor")
+    p.add_argument("--simulate-card", action="store_true",
+                   help="use the fake card reader (data/sim_card.txt)")
     return p.parse_args(argv)
 
 
@@ -78,6 +82,8 @@ def main(argv=None) -> int:
         sensor = SimulatedBackend(config, data_dir / "sim_fingerprints.json")
         events.info("fingerprint.backend", "simulated sensor (--simulate-fingerprint)")
     fingerprints = FingerprintService(config, users, events, backend=sensor)
+    cards = CardService(config, users, events, simulate=args.simulate_card)
+    cards.start()
     temp_codes = TempCodeStore(config, events)
     faces = FaceService(config, users, events)
     faces.start()
@@ -105,6 +111,7 @@ def main(argv=None) -> int:
         lock=lock,
         users=users,
         fingerprints=fingerprints,
+        cards=cards,
         temp_codes=temp_codes,
         faces=faces,
         alerts=alerts,
@@ -125,6 +132,7 @@ def main(argv=None) -> int:
             "bot": alerts.bot_online(),
             "relay": lock.backend.name,
             "fingerprint": fingerprints.online if fingerprints.available else None,
+            "card": cards.online if cards.available else None,
             "sensors": hazards.states(),
             "pending_alerts": len(alerts.pending()),
             "backlog_rows": rows,
@@ -141,6 +149,7 @@ def main(argv=None) -> int:
         faces.close()
         temp_codes.close()
         fingerprints.close()
+        cards.close()
         lock.close()
         recorder.close()   # after the lock, so "relay released" is recorded too
         cloud.close()

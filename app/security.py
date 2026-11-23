@@ -192,14 +192,18 @@ class LoginLimiter:
 
     One shared counter for all accounts: on a door panel the attacker is the
     person at the screen, not a particular account.  Persisted next to the
-    keypad state so a reboot does not reset it.
+    keypad state so a reboot does not reset it.  The card reader uses its own
+    instance (``card_state.json``, event ``card.lockout``) against someone
+    trying card after card.
     """
 
-    def __init__(self, config: Config, events=None):
+    def __init__(self, config: Config, events=None, state_file: str = "login_state.json",
+                 event: str = "login.lockout", what: str = "PIN failures"):
         self.config = config
         self.events = events
+        self._event, self._what = event, what
         self._lock = threading.Lock()
-        self._path = config.path_for("logging", "file").parent / "login_state.json"
+        self._path = config.path_for("logging", "file").parent / state_file
         self._failures = 0
         self._until = 0.0
         self._level = 0
@@ -258,6 +262,6 @@ class LoginLimiter:
             self._until = time.time() + duration
             self._save()
         if self.events:
-            self.events.warning("login.lockout",
-                                f"too many PIN failures ({who}), locked out {duration:.0f}s")
+            self.events.warning(self._event,
+                                f"too many {self._what} ({who}), locked out {duration:.0f}s")
         return AttemptResult(False, True, 0, duration, "locked_out")

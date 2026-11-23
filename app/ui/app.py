@@ -35,6 +35,7 @@ class Context:
     doorbell: object = None
     cloud: object = None
     commands: object = None
+    cards: object = None
 
 
 class Banner(tk.Label):
@@ -143,6 +144,8 @@ class App:
         # Listen first, so a camera change during start-up is not missed.
         ctx.faces.add_listener(lambda _online: self.post(self._update_badges))
         ctx.fingerprints.add_listener(lambda _online: self.post(self._update_badges))
+        if ctx.cards is not None:
+            ctx.cards.add_listener(lambda _online: self.post(self._update_badges))
         if ctx.hazards is not None:
             ctx.hazards.add_listener(lambda _states: self.post(self._hazard_changed))
         if ctx.doorbell is not None:
@@ -269,6 +272,7 @@ class App:
 
     def _update_badges(self) -> None:
         from ..fingerprint import MODE_HARDWARE, MODE_SIMULATED
+        from ..nfc import MODE_SIMULATED as CARD_SIM
         from ..hazard import STATE_ALARM, STATE_SUSPECT
 
         badges = []
@@ -289,6 +293,12 @@ class App:
         elif mode == MODE_HARDWARE:
             badges.append(("FP OFF", theme.DANGER_HI) if self.ctx.fingerprints.online is False
                           else ("FP", theme.OK_HI))
+        cards = self.ctx.cards
+        if cards is not None and cards.mode == CARD_SIM:
+            badges.append(("CARD SIM", theme.WARN))
+        elif cards is not None and cards.available:
+            badges.append(("CARD OFF", theme.DANGER_HI) if cards.online is False
+                          else ("CARD", theme.OK_HI))
         if self.ctx.faces.available:
             badges.append(("CAM", theme.OK_HI) if self.ctx.faces.camera_online
                           else ("CAM OFF", theme.DANGER_HI))
@@ -301,6 +311,8 @@ class App:
         self._closing = True
         try:
             self.ctx.fingerprints.close()
+            if self.ctx.cards is not None:
+                self.ctx.cards.close()
             self.ctx.faces.close()
         finally:
             self.ctx.lock.close()

@@ -25,7 +25,7 @@
 --     delete, and the change log
 --   own password                                yes     yes
 --
---   (*) members see refused door codes, faces and fingers; not wrong panel
+--   (*) members see refused door codes, faces, fingers and cards; not wrong panel
 --       PINs, nor messages from unknown WhatsApp numbers.
 --
 -- A signed-in account that is not in door_members sees nothing at all, so an
@@ -106,7 +106,7 @@ create policy "door members read events" on public.door_events
       when 'admin' then true
       when 'member' then
         category in ('entry', 'doorbell', 'alarm')
-        or (category = 'denied' and method in ('keypad', 'face', 'fingerprint'))
+        or (category = 'denied' and method in ('keypad', 'face', 'fingerprint', 'card'))
       else false
     end
   );

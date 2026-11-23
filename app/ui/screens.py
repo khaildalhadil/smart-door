@@ -26,6 +26,9 @@ FP_MSG_UNREADABLE = "Couldn't read the finger — try again"
 FP_MSG_OFFLINE = "Fingerprint sensor not responding"
 FP_MSG_ERROR = "Fingerprint error — try again"
 
+# Cards (app/nfc.py).  Same width limit.
+CARD_MSG_DENIED = "Access denied — unknown card"
+
 # Doorbell: what the visitor reads.  Same width limit as the lines above.
 BELL_TEXT = "Ring bell"
 BELL_MSG_RINGING = "Ringing… the owner was notified"
@@ -152,6 +155,10 @@ class HomeScreen(Screen):
                 on_finger=lambda: app.post(self._fp_touched),
                 on_result=lambda result: app.post(self._fp_result, result),
             )
+        cards = self.ctx.cards
+        self._card_token = None
+        if cards is not None and cards.available:
+            self._card_token = cards.watch(lambda uid: app.post(self._card, uid))
 
     def destroy(self) -> None:
         if self._bell_job is not None:
@@ -163,6 +170,8 @@ class HomeScreen(Screen):
             self.ctx.fingerprints.release(self._fp_token)
         if self._face_token is not None:
             self.ctx.faces.release(self._face_token)
+        if self._card_token is not None:
+            self.ctx.cards.release(self._card_token)
         super().destroy()
 
     # ---------------------------------------------------------------- lock tile
@@ -190,6 +199,8 @@ class HomeScreen(Screen):
             bg, text = theme.SURFACE, "LOCKED"
             sub = "Code + #" + ("  or touch the sensor" if self._fp_auto
                                else "  or scan a finger" if self.fp_button else " to open")
+            if self._card_token is not None:
+                sub += ", or a card"
         fg_sub = "#ffffff" if bg != theme.SURFACE else theme.MUTED
         for w in (self.tile, self.state_text, self.state_sub):
             w.configure(bg=bg)
@@ -396,6 +407,26 @@ class HomeScreen(Screen):
             self.msg.show(f"Welcome, {user.name}", "ok")
         else:
             self.msg.show("Relay fault — door not opened.", "error")
+
+    # -------------------------------------------------------------------- card
+    def _card(self, uid: bytes) -> None:
+        """A card was put on the reader."""
+        if not self.alive:
+            return
+        check = self.ctx.cards.check(uid)
+        if check.ok:
+            name = check.user.name
+            if self.ctx.lock.unlock(reason=f"card {name}"):
+                self.msg.show(f"Welcome, {name}", "ok")
+            else:
+                self.msg.show("Relay fault — door not opened.", "error")
+        elif check.reason == "disabled":
+            self.msg.show(f"Access for {check.user.name} is disabled.", "error")
+        elif check.reason == "locked_out":
+            self.msg.show(f"Too many unknown cards. Wait {math.ceil(check.wait)} s", "error")
+        else:
+            n = check.attempt.remaining_attempts if check.attempt else 0
+            self.msg.show(f"{CARD_MSG_DENIED} ({n} left)" if n else CARD_MSG_DENIED, "error")
 
     # -------------------------------------------------------------------- face
     def _face_state(self, state: str) -> None:

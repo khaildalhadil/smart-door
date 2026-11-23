@@ -560,6 +560,10 @@ class CommandRouter:
         if fp is not None and fp.available:
             finger = ("لا ترد ⚠️", "not responding ⚠️") if fp.online is False else ("شغّالة", "ready")
             lines.append(self._t(ar, f"👆 البصمة: {finger[0]}", f"👆 Fingerprint: {finger[1]}"))
+        cards = getattr(ctx, "cards", None)
+        if cards is not None and cards.available:
+            reader = ("لا يرد ⚠️", "not responding ⚠️") if cards.online is False else ("شغّال", "ready")
+            lines.append(self._t(ar, f"💳 قارئ الكروت: {reader[0]}", f"💳 Card reader: {reader[1]}"))
         active = ctx.temp_codes.active_count()
         if active:
             lines.append(self._t(ar, f"🔑 رموز مؤقتة فعّالة: {active}",

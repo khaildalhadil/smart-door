@@ -35,6 +35,7 @@ CLEANUP_EVERY = 6 * 3600.0
 _UNLOCK = re.compile(r"^[\d.]+s(?: \((.*)\))?$")
 _FACE = re.compile(r"^face (.+) \d\.\d\d$")
 _FINGER = re.compile(r"^fingerprint (.+) slot \d+$")
+_CARD = re.compile(r"^card (.+)$")
 _MENU = re.compile(r"^menu \((.+)\)$")
 _ALARM_OPEN = re.compile(r"^((?:fire|smoke)(?: \+ (?:fire|smoke))*) alarm(?:, re-open \d+)?$")
 _SECONDS = re.compile(r"(\d+)\s*s\b")
@@ -78,21 +79,101 @@ def _unlock(reason: str) -> Record | None:
         return Record(H.ENTRY, "fingerprint", m.group(1), photo="finger", alert="entry",
                       alert_event="opened", setting="entries",
                       text=f"🚪 {m.group(1)} دخل (بالبصمة).")
+    m = _CARD.match(reason)
+    if m:
+        return Record(H.ENTRY, "card", m.group(1), photo="card", alert="entry",
+                      alert_event="opened", setting="entries",
+                      text=f"🚪 {m.group(1)} دخل (بالكرت).")
     m = _MENU.match(reason)
     if m:
         return Record(H.ENTRY, "menu", m.group(1), photo="menu", alert="entry",
                       alert_event="opened", setting="entries",
                       text=f"🚪 {m.group(1)} فتح الباب من لوحة التحكم.")
     if reason == "whatsapp doorbell":
-        return Record(H.ENTRY, "doorbell", photo="bell_open")
+        return Record(H.ENTRY, "doorbell", photo="bell_open", alert="entry",
+                      alert_event="visitor", setting="entries",
+                      text="🚪 الزائر دخل بعد موافقتك على الجرس.")
     if reason.startswith("whatsapp"):
-        return Record(H.ENTRY, "whatsapp", photo="whatsapp")
+        return Record(H.ENTRY, "whatsapp", photo="whatsapp", alert="entry",
+                      alert_event="remote", setting="entries",
+                      text="🚪 انفتح الباب بأمر واتساب. هذي الصورة من عند الباب.")
     m = _ALARM_OPEN.match(reason)
     if m:
         return Record(H.ALARM, m.group(1).split(" + ")[0])
-    if reason in ("self-test", "simulation button"):
+    if reason == "self-test":
+        return Record(H.SYSTEM, "test", photo="test", alert="admin", alert_event="relay_test",
+                      setting="admin_changes",
+                      text="🔧 تجربة الريلاي من لوحة التحكم: الباب انفتح ثانية وحدة.")
+    if reason == "simulation button":
         return Record(H.SYSTEM, "test")
-    return Record(H.ENTRY, "other", photo="entry")
+    return Record(H.ENTRY, "other", photo="entry", alert="entry", alert_event="opened",
+                  setting="entries", text="🚪 انفتح الباب.")
+
+
+def _who(message: str) -> str:
+    """The person a "Name (details)" admin message is about."""
+    return message.split(" (")[0]
+
+
+def _admin_change(event: str, message: str) -> Record | None:
+    """A change made on the door panel: told to the owner with a picture of
+    whoever stands at the panel ([notify] admin_changes)."""
+    text = None
+    person = ""
+    if event == "passcode.changed":
+        text = "🔐 تم تغيير رمز الباب من لوحة التحكم."
+    elif event == "user.add":
+        person = _who(message)
+        text = f"👤 مستخدم جديد أُضيف من لوحة الباب: {message}"
+    elif event == "user.delete":
+        person = _who(message)
+        text = f"🗑 مستخدم انحذف من لوحة الباب: {message}"
+    elif event == "user.enabled":
+        m = re.match(r"^(.+) -> (enabled|disabled)$", message)
+        person = m.group(1) if m else ""
+        state = "تفعيل" if m and m.group(2) == "enabled" else "تعطيل"
+        text = f"👤 تم {state} حساب {person or 'مستخدم'} من لوحة الباب."
+    elif event == "user.pin":
+        m = re.match(r"^PIN changed for (.+)$", message)
+        person = m.group(1) if m else ""
+        text = f"🔑 تغيّر PIN حساب {person or 'مستخدم'} على لوحة الباب."
+    elif event == "face.add":
+        person = _who(message)
+        text = f"🙂 وجه جديد يفتح الباب أُضيف لـ {person}."
+    elif event == "face.delete":
+        person = _who(message)
+        text = f"🗑 انحذف وجه من حساب {person}."
+    elif event == "fingerprint.add":
+        m = re.match(r"^slot \d+ -> (.+?) '", message)
+        person = m.group(1) if m else ""
+        text = f"👆 بصمة جديدة تفتح الباب أُضيفت لـ {person or 'مستخدم'}."
+    elif event == "fingerprint.delete":
+        m = re.match(r"^slot \d+ \((.+)\)$", message)
+        person = m.group(1) if m else ""
+        text = f"🗑 انحذفت بصمة من حساب {person or 'مستخدم'}."
+    elif event == "fingerprint.clear":
+        text = "🗑 انمسحت كل البصمات من حساس البصمة."
+    elif event == "card.add":
+        person = _who(message)
+        text = f"💳 كرت جديد يفتح الباب أُضيف لـ {person}."
+    elif event == "card.delete":
+        person = _who(message)
+        text = f"🗑 انحذف كرت من حساب {person}."
+    elif event == "security.reset":
+        m = re.match(r"^lockouts cleared by (.+)$", message)
+        person = m.group(1) if m else ""
+        text = f"🔓 {person or 'المدير'} مسح حظر المحاولات من لوحة الباب."
+    elif event == "app.exit":
+        m = re.match(r"^closed by (.+)$", message)
+        person = m.group(1) if m else ""
+        return Record(H.ADMIN, person=person, photo="admin", alert="admin",
+                      alert_event="exit", setting="admin_changes", urgent=True,
+                      text=f"⛔ {person or 'المدير'} أغلق برنامج الباب من اللوحة.\n"
+                           "الأرقام والوجه والبصمة والكرت ما تفتح الباب لين يشتغل من جديد.")
+    if text is None:
+        return None
+    return Record(H.ADMIN, person=person, photo="admin", alert="admin",
+                  alert_event=event.replace(".", "_"), setting="admin_changes", text=text)
 
 
 def classify(event: str, message: str, level: str = "INFO",
@@ -130,6 +211,23 @@ def classify(event: str, message: str, level: str = "INFO",
         return Record(H.DENIED, "fingerprint", photo="finger_deny", alert="fingerprint",
                       alert_event="denied", setting="unknown_fingerprint",
                       text="⚠️ بصمة غير مسجّلة حاولت فتح الباب.")
+    if event == "card.deny":
+        m = re.match(r"^(.+) is disabled", message)
+        if m:
+            return Record(H.DENIED, "card", m.group(1), photo="card_deny", alert="card",
+                          alert_event="denied",
+                          text=f"⚠️ {m.group(1)} حاول يفتح الباب بكرته، وحسابه معطّل.")
+        m = _LEFT.search(message)
+        left = f"\nالمحاولات الباقية قبل قفل قارئ الكروت: {m.group(1)}" if m else ""
+        return Record(H.DENIED, "card", photo="card_deny", alert="card",
+                      alert_event="denied", setting="unknown_card",
+                      text="⚠️ كرت غير مسجّل حاول يفتح الباب." + left)
+    if event == "card.lockout":
+        m = _SECONDS.search(message)
+        wait = ar_duration(int(m.group(1))) if m else "مؤقتًا"
+        return Record(H.DENIED, "card", photo="card_lock", alert="card",
+                      alert_event="lockout", setting="unknown_card", urgent=True,
+                      text=f"🚫 كروت غير مسجّلة تكررت على قارئ الباب.\nقارئ الكروت مقفل {wait}.")
     if event == "face.deny":
         m = re.match(r"^(.+) is disabled$", message)
         if m:
@@ -151,11 +249,11 @@ def classify(event: str, message: str, level: str = "INFO",
     if event == "login.lockout":
         m = _SECONDS.search(message)
         wait = ar_duration(int(m.group(1))) if m else "مؤقتًا"
-        return Record(H.DENIED, "login", alert="login", alert_event="lockout",
-                      setting="wrong_pin", urgent=True,
+        return Record(H.DENIED, "login", photo="pin_lock", alert="login",
+                      alert_event="lockout", setting="wrong_pin", urgent=True,
                       text=f"🚫 محاولات PIN خاطئة متكررة.\nتسجيل الدخول على اللوحة مقفل {wait}.")
     if event == "bot.deny":
-        return Record(H.DENIED, "whatsapp", alert="bot", alert_event="denied",
+        return Record(H.DENIED, "whatsapp", alert="bot", alert_event="denied", gap=60.0,
                       text="🚫 رقم غير مصرّح له حاول يرسل أمرًا للباب:\n" + message)
 
     # -------------------------------------------------------------- doorbell
@@ -193,23 +291,15 @@ def classify(event: str, message: str, level: str = "INFO",
     if event == "tempcode.add":
         return Record(H.REMOTE, "temp_code")
     if event == "session.login":
-        return Record(H.ADMIN, "login", message.split(" (")[0])
-    if event == "passcode.changed":
-        return Record(H.ADMIN, alert="admin", alert_event="passcode",
-                      setting="admin_changes",
-                      text="🔐 تم تغيير رمز الباب من لوحة التحكم.")
-    if event == "user.add":
-        return Record(H.ADMIN, person=message.split(" (")[0], alert="admin",
-                      alert_event="user_add", setting="admin_changes",
-                      text=f"👤 مستخدم جديد أُضيف من لوحة الباب: {message}")
-    if event == "user.delete":
-        return Record(H.ADMIN, person=message.split(" (")[0], alert="admin",
-                      alert_event="user_delete", setting="admin_changes",
-                      text=f"🗑 مستخدم انحذف من لوحة الباب: {message}")
-    if event in ("user.enabled", "user.pin", "face.add", "face.delete",
-                 "fingerprint.add", "fingerprint.delete", "fingerprint.enroll",
-                 "fingerprint.erase", "fingerprint.clear", "security.reset", "app.exit"):
-        return Record(H.ADMIN)
+        who = message.split(" (")[0]
+        return Record(H.ADMIN, "login", who, photo="admin", alert="admin",
+                      alert_event="login", setting="panel_login",
+                      text=f"👤 {who} سجّل دخول على لوحة الباب.")
+    admin = _admin_change(event, message)
+    if admin is not None:
+        return admin
+    if event in ("fingerprint.enroll", "fingerprint.erase"):
+        return Record(H.ADMIN)   # the same change as fingerprint.add / .delete
 
     # ----------------------------------------------------------------- system
     if event == "app.start":
@@ -229,6 +319,16 @@ def classify(event: str, message: str, level: str = "INFO",
         return Record(H.SYSTEM, "relay", alert="relay", alert_event="fault",
                       setting="faults", gap=FAULT_GAP,
                       text="⚠️ عطل في ريلاي القفل: الباب ربما ما ينفتح.\n" + message)
+    if event == "card.offline":
+        return Record(H.SYSTEM, "card", alert="card", alert_event="offline",
+                      setting="faults", gap=FAULT_GAP,
+                      text="💳 قارئ الكروت لا يرد: الكروت ما تفتح الباب لين يرجع.")
+    if event == "card.online":
+        return Record(H.SYSTEM, "card")
+    if event == "fingerprint.offline":
+        return Record(H.SYSTEM, "fingerprint", alert="fingerprint", alert_event="offline",
+                      setting="faults", gap=FAULT_GAP,
+                      text="👆 حساس البصمة لا يرد: البصمة ما تفتح الباب لين يرجع.")
     if event in ("fingerprint.offline", "fingerprint.online", "fingerprint.fault",
                  "fingerprint.error", "face.error", "ui.exception", "api.exception",
                  "api.auth"):

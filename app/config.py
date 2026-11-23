@@ -78,6 +78,22 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # Seconds between "is a finger on the sensor?" checks while watching.
         "poll_seconds": "0.3",
     },
+    "card": {
+        # PN532 NFC / RFID card reader on I2C (app/nfc.py): mode switch on I2C,
+        # VCC on 3.3V (never 5V), SDA -> pin 3, SCL -> pin 5.  Nothing touches
+        # the bus while this is false; tools/probe_card.py checks the reader
+        # and sets it to true.
+        "enabled": "false",
+        # Fake reader for testing the screens: the card "on the reader" is the
+        # hex number in data/sim_card.txt.  Takes priority over "enabled".
+        "simulate": "false",
+        "bus": "1",
+        "address": "0x24",
+        # Seconds between "is a card on the reader?" checks.
+        "poll_seconds": "0.25",
+        # Key for the card hashes in data/users.json; made on first use.
+        "uid_key": "",
+    },
     "face": {
         # Camera face recognition (app/face.py).  Needs python3-opencv and the
         # two models from tools/fetch_face_models.py.
@@ -187,17 +203,25 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # app/alerts.py).  Fire / smoke alerts are always sent.
         "wrong_code": "true",           # wrong door code, with the picture
         "unknown_fingerprint": "true",  # a finger that is not enrolled
+        "unknown_card": "true",         # a card that is not registered
         "wrong_pin": "true",            # wrong sign-in PIN on the panel
-        # Anyone the camera does not know.  Off: every visitor would alert.
-        "unknown_face": "false",
+        # Anyone the camera does not know (at most once per person at the
+        # door, and once every 10 s).
+        "unknown_face": "true",
         "temp_code_used": "true",       # the guest used the one-time code
-        "entries": "false",             # every normal entry (keypad, face, finger)
-        "admin_changes": "true",        # door code changed, user added / deleted
-        "faults": "true",               # camera unplugged, relay fault
+        # Every entry: keypad, face, finger, card, menu, WhatsApp, visitor.
+        "entries": "true",
+        # Changes on the panel: door code, users, faces, fingers, cards,
+        # lockouts cleared, app closed, relay test.
+        "admin_changes": "true",
+        "panel_login": "true",          # someone signed in to the panel
+        "faults": "true",               # camera, fingerprint sensor, card reader, relay
         "alarm_photo": "true",          # a picture right after a fire / smoke alert
-        "startup": "false",             # "the door system has (re)started"
-        # At most one alert of the same kind this often (lockouts always go).
-        "min_gap_seconds": "20",
+        "startup": "true",              # "the door system has (re)started"
+        # Seconds between two alerts of the same kind; 0 = every event is sent.
+        # (Wrong codes, PINs and cards still stop at the lockout; lockouts and
+        # alarms always go.)
+        "min_gap_seconds": "0",
     },
     "doorbell": {
         # "Ring bell" button on the door screen: picture + WhatsApp question.
