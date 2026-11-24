@@ -50,6 +50,14 @@ MODELS = {
 # Saved with every enrolled face: embeddings from another model mean nothing.
 MODEL_ID = "sface-2021dec"
 
+# A black frame is no picture: darker than BLANK_MEAN and flatter than
+# BLANK_STD (0-255 grey).  snapshot() tries up to SNAPSHOT_TRIES frames before
+# it gives up, and says so in the event log at most every BLANK_LOG_EVERY s.
+BLANK_MEAN = 12.0
+BLANK_STD = 4.0
+SNAPSHOT_TRIES = 8
+BLANK_LOG_EVERY = 600.0
+
 MODE_IDLE = "idle"
 MODE_WATCH = "watch"
 MODE_ENROL = "enrol"
@@ -241,6 +249,19 @@ class _Job:
     finished: bool = False
 
 
+def is_blank(frame) -> bool:
+    """True when ``frame`` (BGR or grey) is one flat, dark colour: no picture.
+
+    The camera sometimes hands over such frames (every pixel about 2, no noise
+    at all).  A real scene, even a dim one, has texture, so it passes.
+    """
+    import cv2
+
+    grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+    mean, std = cv2.meanStdDev(grey)
+    return float(mean[0][0]) < BLANK_MEAN and float(std[0][0]) < BLANK_STD
+
+
 class _Snapshot:
     """One pending :meth:`FaceService.snapshot` call."""
 
@@ -276,6 +297,9 @@ class FaceService:
         self._last_error = ""
         self._gallery = Gallery()
         self._snaps: list[_Snapshot] = []   # threads waiting for a still picture
+        # The last snapshot() gave up because every frame was black.
+        self.last_blank = False
+        self._blank_logged = float("-inf")
         self._reason = self._check()
 
     def _check(self) -> str:
@@ -369,8 +393,35 @@ class FaceService:
 
         Safe from any thread.  The worker owns the camera, so this asks it for
         its next frame and waits; whatever the screen is doing goes on.
+
+        A flat black frame is no picture (see :func:`is_blank`): the next
+        frames are tried, and when they are all black the answer is None with
+        ``last_blank`` set, so the caller can say why there is no picture.
         """
+        self.last_blank = False
         if not self.available or self._thread is None or not self._online:
+            return None
+        deadline = time.monotonic() + timeout
+        blank = False
+        for _ in range(SNAPSHOT_TRIES):
+            frame = self._next_frame(deadline - time.monotonic())
+            if frame is None:
+                break
+            if not is_blank(frame):
+                return frame
+            blank = True
+        if blank:
+            self.last_blank = True
+            now = time.monotonic()
+            if self.events and now - self._blank_logged >= BLANK_LOG_EVERY:
+                self._blank_logged = now
+                self.events.warning("face.blank",
+                                    "the camera gave only black frames: no picture taken")
+        return None
+
+    def _next_frame(self, timeout: float):
+        """The worker's next frame, or None when none comes within ``timeout``."""
+        if timeout <= 0:
             return None
         request = _Snapshot()
         with self._lock:

@@ -474,6 +474,10 @@ class CommandRouter:
         faces, history = self.ctx.faces, self.ctx.history
         jpeg = faces.snapshot_jpeg() if faces is not None else None
         name = history.save_photo(jpeg, "request") if jpeg else ""
+        if not name and faces is not None and getattr(faces, "last_blank", False):
+            return self._result("photo", self._t(
+                ar, "📷 الكاميرا ما أعطت إلا صورة سوداء، فما أرسلتها.",
+                "📷 The camera gave only a black picture, so none was sent."))
         if not name:
             return self._result("photo", self._t(
                 ar, "📷 الكاميرا غير متاحة الآن.", "📷 The camera is not available right now."))
