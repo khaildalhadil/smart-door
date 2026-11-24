@@ -52,9 +52,12 @@ export interface Backend {
 
 export type Connect = (authorization: string, apikey: string) => Backend;
 
+// The headers supabase-js may send (its own list: @supabase/supabase-js/cors);
+// one missing here and the browser's preflight blocks the whole request.
 export const CORS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-retry-count, traceparent, tracestate, baggage",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
