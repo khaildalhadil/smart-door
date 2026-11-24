@@ -245,10 +245,14 @@ class CommandRouter:
 
     def __init__(self, ctx):
         self.ctx = ctx
+        from .ai import Assistant      # OpenAI, for what the keywords don't cover
+        self.ai = Assistant(ctx, self)
 
     # ------------------------------------------------------------- entry point
-    def handle(self, text: str, sender: str = "") -> dict:
-        """The answer to one WhatsApp message, as the API returns it."""
+    def handle(self, text: str, sender: str = "", self_chat: bool = False) -> dict:
+        """The answer to one WhatsApp message, as the API returns it.
+        ``self_chat``: it came from the owner's "message yourself" chat, which
+        also holds their own notes."""
         raw = (text or "").strip()
         ar = _has_arabic(raw) or not any(ch.isalpha() for ch in raw)
         events = self.ctx.events
@@ -263,6 +267,10 @@ class CommandRouter:
         pending = doorbell is not None and doorbell.pending() > 0
         intent = self._intent(toks, "?" in raw or "؟" in raw, pending)
         result = getattr(self, "_do_" + intent)(toks, ar, sender)
+        if not result["handled"] and self.ai.ready:
+            result = self.ai.answer(raw, sender, ar, self_chat, fallback=result)
+        elif result["handled"]:
+            self.ai.remember(sender, raw, result["reply"], result["intent"])
         if result["handled"]:
             # The words themselves stay out of the log: they may hold a code.
             events.info("bot.command", f"{result['intent']} from {mask_number(sender)}")
@@ -427,6 +435,11 @@ class CommandRouter:
                 ar, "⚠️ الرمز المؤقت لازم يكون من 4 إلى 8 أرقام.\n"
                     "مثال: رمز 4455 لمدة 30 دقيقة",
                 "⚠️ A guest code must be 4 to 8 digits.\nExample: code 4455 for 30 minutes"))
+        return self._issue_tempcode(code, seconds, ar)
+
+    def _issue_tempcode(self, code: str | None, seconds: float | None, ar: bool) -> dict:
+        """A one-time guest code: ``code`` None = random, ``seconds`` None = default."""
+        cfg = self.ctx.config
         if seconds is None:
             seconds = cfg.getfloat("bot", "temp_code_minutes", 10.0) * 60
         seconds = int(max(MIN_SECONDS, min(seconds, MAX_SECONDS)))
@@ -470,8 +483,10 @@ class CommandRouter:
 
     # ----------------------------------------------------------- log / summary
     def _do_log(self, toks, ar: bool, _sender: str) -> dict:
-        today = bool(set(toks) & TODAY)
-        wanted = next((int(t) for t in toks if t.isdigit()), 8)
+        return self._events(bool(set(toks) & TODAY),
+                            next((int(t) for t in toks if t.isdigit()), 8), ar)
+
+    def _events(self, today: bool, wanted: int, ar: bool) -> dict:
         rows = self.ctx.history.recent(
             limit=max(1, min(wanted, 15)),
             categories=(H.ENTRY, H.DENIED, H.DOORBELL, H.ALARM),

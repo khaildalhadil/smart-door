@@ -158,7 +158,8 @@ def create_app(ctx, door_key: str) -> Flask:
         if not isinstance(text, str):
             return jsonify(ok=False, error='body must be {"text": "...", "from": "..."}'), 400
         sender = body.get("from")
-        result = ctx.commands.handle(text[:1000], sender if isinstance(sender, str) else "")
+        result = ctx.commands.handle(text[:1000], sender if isinstance(sender, str) else "",
+                                     self_chat=body.get("self") is True)
         return jsonify(ok=True, **result)
 
     @app.get("/photos/<name>")

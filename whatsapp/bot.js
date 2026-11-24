@@ -58,14 +58,32 @@ const STATUS_FILE = path.join(DATA, 'whatsapp-status.json')
 const ALERT_EVERY_MS = 2000
 const STALE_SECONDS = 90          // older commands are not carried out
 const TELL_STALE_SECONDS = 15 * 60
+const LATE_ALERT_SECONDS = 300    // older alerts waited while WhatsApp was down
+const SUMMARY_FROM = 3            // this many late alerts in a row -> one summary message
+const SUMMARY_LINES = 15
 const SENT_MEMORY = 500
 
 const args = process.argv.slice(2)
+// WA_DEBUG=1: one line per incoming message -- what kind, which chat type,
+// why it was skipped -- never its text or anyone's number.
+const DEBUG = process.env.WA_DEBUG === '1'
 const LINK = args.includes('--link')
 const PAIR = args.includes('--pair') ? (args[args.indexOf('--pair') + 1] || '').replace(/\D/g, '') : ''
 const LOGOUT = args.includes('--logout')
 
 const log = (...parts) => console.log(new Date().toLocaleString('sv-SE'), ...parts)
+
+// libsignal (inside Baileys) prints whole Signal sessions -- private keys
+// included -- whenever one opens or closes ("Closing session: SessionEntry
+// {...}").  They would end up in the journal: drop them.
+const SIGNAL_NOISE = /^(Opening session|Closing session|Removing old closed session|Session already (open|closed)|Migrating session)/
+for (const level of ['info', 'warn']) {
+  const original = console[level].bind(console)
+  console[level] = (first, ...rest) => {
+    if (typeof first === 'string' && SIGNAL_NOISE.test(first)) return
+    original(first, ...rest)
+  }
+}
 
 // ------------------------------------------------------------------ settings
 function readIni (file) {
@@ -115,13 +133,13 @@ function writeStatus (state, extra = {}) {
 }
 
 // ------------------------------------------------------------------ door API
-async function door (method, route, body) {
+async function door (method, route, body, timeoutMs = 15000) {
   const { door: base } = settings()
   const res = await fetch(base + route, {
     method,
     headers: { 'X-Door-Key': DOOR_KEY, ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(15000)
+    signal: AbortSignal.timeout(timeoutMs)
   })
   if (!res.ok) throw new Error(`door API ${method} ${route}: HTTP ${res.status}`)
   return res
@@ -139,6 +157,23 @@ async function photoBytes (route) {
 
 // ------------------------------------------------------------------ helpers
 const userOf = jid => jidDecode(jid || '')?.user || ''
+
+// Linked = WhatsApp gave this device an identity.  (creds.registered is only
+// set by the pairing-code route, never by a QR scan.)
+const linked = creds => Boolean(creds?.me?.id)
+
+/** The version web.whatsapp.com serves today: WhatsApp refuses outdated
+ *  clients ("check your connection" on the phone, or code 405). */
+async function waVersion () {
+  for (const latest of [fetchLatestWaWebVersion, fetchLatestBaileysVersion]) {
+    try {
+      const found = await latest()
+      // On failure these return the built-in version with isLatest false.
+      if (found?.version && found.isLatest !== false) return found.version
+    } catch { /* try the next source, then the built-in one */ }
+  }
+  return undefined
+}
 
 function textOf (message) {
   const m = normalizeMessageContent(message)
@@ -222,7 +257,8 @@ async function onMessage (msg) {
   }
   let result
   try {
-    result = await (await door('POST', '/command', { text, from: asker.from })).json()
+    // Up to 90 s: a message the keywords don't know may go to OpenAI (app/ai.py).
+    result = await (await door('POST', '/command', { text, from: asker.from, self: asker.selfChat }, 90000)).json()
   } catch (err) {
     log('command:', err.message)
     await send(asker.jid, '⚠️ برنامج الباب لا يرد الآن. جرّب بعد قليل.')
@@ -241,16 +277,53 @@ function alertTargets () {
   return [...new Set(list)].filter(Boolean).map(n => `${n}@s.whatsapp.net`)
 }
 
+const alertAge = alert => (Date.now() - Date.parse(alert.time || '')) / 1000
+
+const shortTime = iso => {
+  const t = new Date(iso)
+  if (Number.isNaN(t.getTime())) return ''
+  const two = n => String(n).padStart(2, '0')
+  return `${two(t.getDate())}/${two(t.getMonth() + 1)} ${two(t.getHours())}:${two(t.getMinutes())}`
+}
+
+/** One message for a pile of alerts that waited while WhatsApp was down
+ *  (up to 50 after a long outage): the first line of each kind, counted. */
+function summaryOf (late) {
+  const counts = new Map()
+  // "photo" = the picture that followed an alarm: the alarm itself is listed.
+  const worth = late.some(a => a.event !== 'photo') ? late.filter(a => a.event !== 'photo') : late
+  for (const alert of worth) {
+    const line = String(alert.message || '').split('\n')[0].trim()
+    if (line) counts.set(line, (counts.get(line) || 0) + 1)
+  }
+  const lines = [...counts].slice(0, SUMMARY_LINES).map(([line, n]) => `• ${line}${n > 1 ? ` (×${n})` : ''}`)
+  if (counts.size > SUMMARY_LINES) lines.push(`• … و${counts.size - SUMMARY_LINES} أنواع ثانية`)
+  const from = shortTime(late[0].time)
+  const to = shortTime(late[late.length - 1].time)
+  return `⏱ ${late.length} تنبيه صارت والواتساب غير متصل` + (from && to ? ` (من ${from} إلى ${to})` : '') +
+    ':\n' + lines.join('\n') + '\n\nهذي قديمة، مو شي يصير الحين. التنبيهات الجديدة توصلك أول بأول.'
+}
+
 async function pumpAlerts () {
   if (!connected || pumping) return
   pumping = true
   try {
-    const { alerts } = await (await door('GET', '/alerts')).json()
+    let { alerts } = await (await door('GET', '/alerts')).json()
+    // A long outage leaves a pile of old alerts: one summary, not 50 messages
+    // (a burst like that is also how WhatsApp spots unofficial clients).
+    let late = 0
+    while (late < alerts.length && alertAge(alerts[late]) > LATE_ALERT_SECONDS) late++
+    if (late >= SUMMARY_FROM) {
+      const text = summaryOf(alerts.slice(0, late))
+      for (const jid of alertTargets()) await send(jid, text)
+      await door('POST', '/alerts/ack', { id: alerts[late - 1].id })
+      log(`${late} late alerts (#${alerts[0].id}–#${alerts[late - 1].id}) sent as one summary`)
+      alerts = alerts.slice(late)
+    }
     for (const alert of alerts) {
       // Queued while WhatsApp was not linked: say so, a ring from hours ago is
       // not someone at the door now.
-      const age = (Date.now() - Date.parse(alert.time || '')) / 1000
-      const text = age > 300 ? '⏱ تنبيه متأخر (كان الواتساب غير متصل):\n' + alert.message : alert.message
+      const text = alertAge(alert) > LATE_ALERT_SECONDS ? '⏱ تنبيه متأخر (كان الواتساب غير متصل):\n' + alert.message : alert.message
       for (const jid of alertTargets()) await send(jid, text, alert.photo)
       await door('POST', '/alerts/ack', { id: alert.id })
       log(`alert #${alert.id} ${alert.type} ${alert.event} sent`)
@@ -271,27 +344,20 @@ async function showQr (qr) {
   if (LINK || process.stdout.isTTY) console.log(await QRCode.toString(qr, { type: 'terminal', small: true }))
   log(`scan the QR: WhatsApp -> Settings -> Linked devices -> Link a device (also saved to ${path.relative(ROOT, QR_PNG)})`)
   writeStatus('qr')
+  retry = 0   // WhatsApp answered: the internet is fine
 }
 
 async function connect () {
   fs.mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 })
   fs.chmodSync(AUTH_DIR, 0o700)
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
-  // WhatsApp refuses to link an outdated client ("check your connection" on
-  // the phone): announce the version web.whatsapp.com serves today.
-  let version
-  for (const latest of [fetchLatestWaWebVersion, fetchLatestBaileysVersion]) {
-    try {
-      const found = await latest()
-      if (found?.version) { version = found.version; break }
-    } catch { /* try the next source, then the built-in one */ }
-  }
+  const version = await waVersion()
   log(`WhatsApp Web version ${version ? version.join('.') : '(built-in)'}`)
   sock = makeWASocket({
     auth: state,
     version,
     browser: Browsers.ubuntu('Smart Door'),
-    logger: pino({ level: 'error' }),
+    logger: pino({ level: DEBUG ? 'warn' : 'error' }),
     // false: your phone keeps its notifications while the door is linked.
     markOnlineOnConnect: false,
     // The door needs no chat history: none is downloaded or kept.
@@ -301,7 +367,7 @@ async function connect () {
   })
   sock.ev.on('creds.update', saveCreds)
 
-  if (PAIR && !state.creds.registered) {
+  if (PAIR && !linked(state.creds)) {
     setTimeout(async () => {
       try {
         const code = await sock.requestPairingCode(PAIR)
@@ -311,8 +377,9 @@ async function connect () {
   }
 
   sock.ev.on('connection.update', async update => {
-    const { connection, lastDisconnect, qr } = update
+    const { connection, lastDisconnect, qr, isNewLogin } = update
     if (qr && !PAIR) await showQr(qr)
+    if (isNewLogin) log('scanned on the phone: finishing the link ...')
     if (connection === 'open') {
       connected = true
       retry = 0
@@ -329,6 +396,9 @@ async function connect () {
     if (connection === 'close') {
       connected = false
       const code = lastDisconnect?.error?.output?.statusCode
+      // Not linked yet and the QRs simply ran out (every ~2.7 min): routine.
+      const qrExpired = !linked(sock?.authState?.creds) && code === DisconnectReason.timedOut
+      if (!qrExpired) log(`connection closed: ${lastDisconnect?.error?.message || 'no reason given'} (code ${code ?? '-'})`)
       if (code === DisconnectReason.loggedOut) {
         log('logged out from the phone: the session is deleted; link again')
         fs.rmSync(AUTH_DIR, { recursive: true, force: true })
@@ -340,16 +410,37 @@ async function connect () {
         log('another copy of this bot took over the session; this one stops')
         process.exit(1)
       }
-      // Not linked yet: the QR simply ran out, so show a new one right away.
-      const linking = !sock?.authState?.creds?.registered
+      // A QR ran out: show a new one right away.  Anything else (no internet,
+      // WhatsApp refusing) waits longer each time, up to a minute.
       const wait = code === DisconnectReason.restartRequired ? 500
-        : linking ? 1000
+        : qrExpired ? 1000
           : Math.min(60000, 2000 * 2 ** retry++)
       setTimeout(() => connect().catch(err => { log('connect:', err.message); process.exit(1) }), wait)
     }
   })
 
-  sock.ev.on('messages.upsert', async ({ messages }) => {
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (DEBUG) {
+      const self = me()
+      for (const m of messages) {
+        const jid = m.key?.remoteJid || ''
+        const user = userOf(jid)
+        const chat = user && (user === self.pn || user === self.lid) ? `self(${jid.split('@')[1]})` : (jid.split('@')[1] || '?')
+        const kinds = Object.keys(normalizeMessageContent(m.message) || {}).join(',') || '-'
+        let lidInfo = ''
+        if (isLidUser(jid)) {
+          let pn = ''
+          try { pn = userOf(await sock.signalRepository.lidMapping.getPNForLID(jid)) } catch {}
+          lidInfo = ` lidDigits=${user.length} myLidDigits=${self.lid.length} lidIsMyPn=${pn ? pn === self.pn : 'unknown'}` +
+                    ` altIsMe=${userOf(m.key?.remoteJidAlt) === self.pn} chatNumber=…${pn ? pn.slice(-4) : '?'}`
+        } else if (user && !chat.startsWith('self')) {
+          lidInfo = ` chatNumber=…${user.slice(-4)}`
+        }
+        log(`debug upsert ${type}: fromMe=${Boolean(m.key?.fromMe)} chat=${chat}${lidInfo} kinds=${kinds}` +
+            ` stub=${m.messageStubType ?? '-'}${m.messageStubParameters?.[0] ? ' "' + m.messageStubParameters[0] + '"' : ''}` +
+            ` age=${Math.round(Date.now() / 1000 - Number(m.messageTimestamp || 0))}s ours=${sentIds.has(m.key?.id)}`)
+      }
+    }
     for (const msg of messages) {
       try { await onMessage(msg) } catch (err) { log('message:', err.message) }
     }
@@ -362,15 +453,22 @@ async function main () {
     process.exit(1)
   }
   if (LOGOUT) {
+    // Stop the service first (systemctl --user stop door-whatsapp): two copies
+    // of one session knock each other off.
     const { state } = await useMultiFileAuthState(AUTH_DIR)
-    if (state.creds.registered) {
-      sock = makeWASocket({ auth: state, logger: pino({ level: 'error' }), markOnlineOnConnect: false })
-      await new Promise(resolve => sock.ev.on('connection.update', u => u.connection === 'open' && resolve()))
-      await sock.logout().catch(() => {})
+    let unlinked = !linked(state.creds)
+    if (!unlinked) {
+      sock = makeWASocket({ auth: state, version: await waVersion(), logger: pino({ level: 'error' }), markOnlineOnConnect: false })
+      const opened = await new Promise(resolve => {
+        setTimeout(() => resolve(false), 30000)
+        sock.ev.on('connection.update', u => u.connection === 'open' && resolve(true))
+      })
+      if (opened) unlinked = await sock.logout().then(() => true, () => false)
     }
     fs.rmSync(AUTH_DIR, { recursive: true, force: true })
     writeStatus('logged_out')
-    log('unlinked; session deleted')
+    log(unlinked ? 'unlinked; session deleted'
+      : 'session deleted here, but WhatsApp did not answer: remove the "Ubuntu" device on the phone (Settings -> Linked devices)')
     process.exit(0)
   }
   writeStatus('starting')

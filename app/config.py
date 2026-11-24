@@ -244,6 +244,24 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "offline_after_seconds": "45",
         "show_offline_badge": "true",
     },
+    "ai": {
+        # WhatsApp messages the keyword commands don't understand go to the
+        # OpenAI API (app/ai.py) -- only once OPENAI_API_KEY is set in .env.
+        "enabled": "true",
+        "model": "gpt-6-luna",
+        # gpt-6-luna calls tools on Chat Completions only with "none".  Empty =
+        # not sent (for models that take no reasoning setting).
+        "reasoning_effort": "none",
+        # Any OpenAI-compatible endpoint works here.
+        "base_url": "https://api.openai.com/v1",
+        "timeout_seconds": "40",
+        "max_tokens": "800",
+        # Tool rounds per message (e.g. status, then open).
+        "max_rounds": "4",
+        # The conversation is remembered this long, in memory only.
+        "memory_minutes": "15",
+        "memory_messages": "8",
+    },
     "cloud": {
         # Copy history rows and pictures to Supabase for the web dashboard
         # (app/cloud.py).  Runs only once SUPABASE_URL and SUPABASE_SERVICE_KEY
