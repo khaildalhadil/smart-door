@@ -1,4 +1,5 @@
-import { F_WEEKDAY, hourLabel, startOfDay } from "./format";
+import { fmtWeekday, hourLabel, startOfDay } from "./format";
+import { tr } from "./i18n";
 import type { DoorEvent } from "./types";
 import { RANGE_DAYS, type Range } from "./wording";
 
@@ -37,7 +38,7 @@ export function activityBuckets(range: Range, rows: DoorEvent[],
   const buckets: Bucket[] = [];
   if (range === "today") {
     for (let i = 0; i < 24; i++) {
-      buckets.push({ label: String(i), title: "اليوم " + hourLabel(i) + " – " + hourLabel((i + 1) % 24),
+      buckets.push({ label: String(i), title: tr("اليوم ", "Today ") + hourLabel(i) + " – " + hourLabel((i + 1) % 24),
                      values: new Array(width).fill(0) });
     }
     for (const r of rows) valuesOf(r, buckets[new Date(r.t!).getHours()].values);
@@ -50,7 +51,7 @@ export function activityBuckets(range: Range, rows: DoorEvent[],
     const d = new Date(start);
     d.setDate(d.getDate() + i);
     index.set(d.getTime(), i);
-    buckets.push({ label: d.getDate() + "/" + (d.getMonth() + 1), title: F_WEEKDAY.format(d),
+    buckets.push({ label: d.getDate() + "/" + (d.getMonth() + 1), title: fmtWeekday(d),
                    values: new Array(width).fill(0) });
   }
   for (const r of rows) {

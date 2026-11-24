@@ -140,7 +140,9 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 .gate { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
 .gate-card { width: min(440px, 100%); background: var(--surface); border: 1px solid var(--border);
              border-radius: 16px; padding: 28px 24px; box-shadow: var(--shadow); }
-.gate-card .brand { margin-bottom: 14px; }
+.gate-top { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+            margin-bottom: 14px; }
+.gate-card .lang-button { width: auto; min-height: 36px; }
 .lead { color: var(--text-2); margin-bottom: 16px; }
 .steps { padding-inline-start: 20px; margin-bottom: 20px; color: var(--text-2); }
 .steps li { margin-bottom: 8px; }
@@ -292,6 +294,9 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 .log td.when { white-space: nowrap; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .log td small { display: block; color: var(--muted); direction: ltr; text-align: end;
                 unicode-bidi: plaintext; }
+:root[dir="ltr"] .log td small { text-align: start; }
+.no-photo { display: inline-flex; align-items: center; gap: 4px; color: var(--muted);
+            font-size: 0.85rem; white-space: nowrap; }
 .log .link { font: inherit; color: var(--accent); background: none; border: 0; padding: 0;
              cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
 .pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 14px; }
@@ -311,10 +316,21 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 .viewer-side dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
 .viewer-nav { display: flex; gap: 8px; }
 .viewer-nav .button { flex: 1; }
+/* The arrows were drawn for the Arabic page: newer to the right, older to the left. */
+:root[dir="ltr"] .viewer-nav .icon { transform: scaleX(-1); }
+
+/* No picture (none in the bucket, or it would not load): said plainly, never a black box. */
+.no-picture { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+              background: var(--surface-2); color: var(--muted); font-size: 0.85rem; font-weight: 600;
+              text-align: center; }
+.no-picture .icon { width: 30px; height: 30px; opacity: 0.8; }
+.shot .no-picture { width: 100%; aspect-ratio: 4 / 3; flex: none; }
+.viewer .no-picture { min-height: 280px; height: 100%; font-size: 1rem; }
+.viewer .no-picture .icon { width: 44px; height: 44px; }
 .viewer-close { position: absolute; top: 6px; inset-inline-end: 6px; }
 
 /* ----------------------------------------------------------------- tooltip */
-.tooltip { position: fixed; z-index: 50; pointer-events: none; direction: rtl;
+.tooltip { position: fixed; z-index: 50; pointer-events: none;
            background: var(--text); color: var(--page); border-radius: 9px; padding: 8px 11px;
            font-size: 0.85rem; line-height: 1.5; max-width: 260px;
            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); }

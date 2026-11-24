@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { n, sum } from "../lib/format";
+import { tr } from "../lib/i18n";
 import type { Bucket } from "../lib/stats";
 import { Icon } from "./Icons";
 import { useTip, type TipLine } from "./Tooltip";
@@ -59,7 +60,7 @@ export function ColumnChart({ id, buckets, series, unit, anchor = "start", summa
     if (!hit || !bucket) return;
     const lines: TipLine[] = series.length > 1
       ? [...series.map((one, s) => ({ value: n(bucket.values[s]), label: one.name, color: one.color })),
-         { value: n(totals[i]), label: "المجموع" }]
+         { value: n(totals[i]), label: tr("المجموع", "Total") }]
       : [{ value: n(totals[i]), label: unit || series[0].name, color: series[0].color }];
     const box = hit.getBoundingClientRect();
     const step = niceStep(max), ceiling = Math.ceil(max / step) * step;
@@ -86,7 +87,7 @@ export function ColumnChart({ id, buckets, series, unit, anchor = "start", summa
 
   let body = null;
   if (!max) {
-    body = <p className="empty">{empty || "لا توجد بيانات في هذه الفترة"}</p>;
+    body = <p className="empty">{empty || tr("لا توجد بيانات في هذه الفترة", "No data in this period")}</p>;
   } else if (width) {
     const w = Math.max(220, width);
     const step = niceStep(max), ceiling = Math.ceil(max / step) * step;
@@ -166,7 +167,7 @@ export function ChartTable({ id, first, buckets, series }: {
   const multi = series.length > 1;
   return (
     <details className="table-view">
-      <summary><Icon name="table" />عرض كجدول</summary>
+      <summary><Icon name="table" />{tr("عرض كجدول", "Show as a table")}</summary>
       <div id={id}>
         <div>
           <table>
@@ -174,7 +175,7 @@ export function ChartTable({ id, first, buckets, series }: {
               <tr>
                 <th>{first}</th>
                 {series.map((one) => <th key={one.name}>{one.name}</th>)}
-                {multi && <th>المجموع</th>}
+                {multi && <th>{tr("المجموع", "Total")}</th>}
               </tr>
             </thead>
             <tbody>

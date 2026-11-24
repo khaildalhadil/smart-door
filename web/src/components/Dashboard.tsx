@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AUDIT_ROWS } from "../lib/config";
 import { errorText, sessionLost } from "../lib/errors";
-import { F_DAY, F_TIME, F_WEEKDAY, n } from "../lib/format";
+import { count, fmtDay, fmtTime, fmtWeekday, n } from "../lib/format";
+import { tr, withLang } from "../lib/i18n";
 import { activityBuckets, hourBuckets, rangeStart, split, tally } from "../lib/stats";
 import type { Account, AuditRow, DoorEvent, DoorStatus, Me, Role, Source } from "../lib/types";
-import { GROUPS, GROUP_OF, METHOD, RANGES, RANGE_DAYS, ROLE_NAME, ROLE_NOTE, type Range } from "../lib/wording";
+import { GROUP_OF, RANGE_DAYS, groups, methodName, ranges, roleName, roleNote, type Range } from "../lib/wording";
 import { AccountsCard, myAccountJob } from "./Accounts";
 import { ChartTable, ColumnChart } from "./ColumnChart";
 import type { GateMode } from "./Gate";
 import { Icon } from "./Icons";
+import { LangButton } from "./LangButton";
 import { Device, Insights, Kpis } from "./Overview";
 import { Gallery, Viewer } from "./Photos";
 import { EventLog } from "./EventLog";
@@ -21,6 +23,9 @@ interface Data {
   prev: { entry: number | null; denied: number | null };
   loadedAt: number;
 }
+
+/** An error as it came: put in words while rendering, so it follows the language. */
+type Failure = { err: unknown } | null;
 
 function initialRange(): Range {
   const wanted = new URLSearchParams(window.location.search).get("range") as Range | null;
@@ -43,7 +48,7 @@ function toggleTheme() {
 export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
   source: Source;
   me: Me;
-  onGate: (mode: GateMode, message?: string, email?: string) => void;
+  onGate: (mode: GateMode, error?: unknown, email?: string) => void;
   onSignOut: () => void;
 }) {
   const [me, setMe] = useState<Me>(firstMe);
@@ -52,12 +57,12 @@ export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
   const [range, setRange] = useState<Range>(initialRange);
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(false);
-  const [banner, setBanner] = useState<{ text: string; error: boolean } | null>(null);
+  const [failure, setFailure] = useState<Failure>(null);
   const [live, setLive] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [audit, setAudit] = useState<AuditRow[] | null>(null);
-  const [accountsError, setAccountsError] = useState("");
+  const [accountsFailure, setAccountsFailure] = useState<Failure>(null);
   const [toast, setToast] = useState("");
   const [sheet, setSheet] = useState<SheetJob | null>(null);
   const [viewer, setViewer] = useState<{ list: DoorEvent[]; at: number } | null>(null);
@@ -73,7 +78,7 @@ export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
     toastTimer.current = window.setTimeout(() => setToast(""), 5000);
   }, []);
 
-  const showError = useCallback((err: unknown) => setBanner({ text: errorText(err), error: true }), []);
+  const showError = useCallback((err: unknown) => setFailure({ err }), []);
 
   const loadAccounts = useCallback(async () => {
     if (roleRef.current !== "admin") return;
@@ -82,9 +87,9 @@ export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
       if (roleRef.current !== "admin") return;
       setAccounts(list);
       setAudit(changes);
-      setAccountsError("");
+      setAccountsFailure(null);
     } catch (err) {
-      setAccountsError(errorText(err));
+      setAccountsFailure({ err });
     }
   }, [source]);
 
@@ -104,7 +109,7 @@ export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
         source.count("denied", beforeISO, fromISO), source.me()]);
       if (rangeRef.current !== wanted) return;   // the period changed meanwhile
       if (!who || !who.role) {
-        onGate("denied", "", who ? who.email : "");
+        onGate("denied", undefined, who ? who.email : "");
         return;
       }
       if (who.role !== roleRef.current) {
@@ -115,16 +120,16 @@ export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
           setAudit(null);
           setViewer(null);
         }
-        say("صلاحيتك الآن: " + ROLE_NAME[who.role]);
+        say(tr("صلاحيتك الآن: ", "Your role is now: ") + roleName(who.role));
       }
       for (const r of rows) r.t = Date.parse(r.ts);
       setData({ rows, status, prev: { entry: prevEntry, denied: prevDenied }, loadedAt: Date.now() });
-      setBanner(null);
+      setFailure(null);
       setNow(Date.now());
       if (who.role === "admin") void loadAccounts();
     } catch (err) {
-      setBanner({ text: errorText(err), error: true });
-      if (sessionLost(err)) onGate("login", errorText(err));
+      setFailure({ err });
+      if (sessionLost(err)) onGate("login", err);
     } finally {
       setLoading(false);
     }
@@ -159,6 +164,7 @@ export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
   const { entries, denied, rings, alarms } = split(rows);
   const today = range === "today";
   const anchor = today ? "start" : "end";
+  const GROUPS = groups();
   const activity = activityBuckets(range, entries, (r, values) => {
     values[GROUPS.findIndex((g) => g.key === (GROUP_OF[r.method] || "other"))]++;
   }, GROUPS.length);
@@ -166,6 +172,10 @@ export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
   const hours = hourBuckets(entries);
   const one = (name: string, color: string) => [{ name, color }];
   const openViewer = (list: DoorEvent[], at: number) => setViewer({ list, at });
+  const entrySeries = one(tr("دخول", "Entries"), "var(--series-1)");
+  const deniedSeries = one(tr("محاولات مرفوضة", "Refused attempts"), "var(--critical)");
+  const hourOrDay = today ? tr("الساعة", "Hour") : tr("اليوم", "Day");
+  const otherRole: Role = admin ? "member" : "admin";
 
   return (
     <div id="app" data-role={role}>
@@ -173,31 +183,36 @@ export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
         <div className="brand">
           <Icon name="lock" className="icon-lg" />
           <div>
-            <h1>القفل الذكي</h1>
+            <h1>{tr("القفل الذكي", "Smart Lock")}</h1>
             <p className="brand-sub">
-              <span id="subtitle" className="muted">{source.demo ? "لوحة المتابعة · عرض تجريبي" : "لوحة المتابعة"}</span>
-              <span id="role-chip" className={"role-chip " + role} title={ROLE_NOTE[role]}>
-                <Icon name={admin ? "shield" : "user"} />{ROLE_NAME[role]}
+              <span id="subtitle" className="muted">
+                {tr("لوحة المتابعة", "Dashboard") + (source.demo ? tr(" · عرض تجريبي", " · demo") : "")}
+              </span>
+              <span id="role-chip" className={"role-chip " + role} title={roleNote(role)}>
+                <Icon name={admin ? "shield" : "user"} />{roleName(role)}
               </span>
             </p>
           </div>
         </div>
         <div className="topbar-actions">
-          <span id="live" className="live" hidden={!live}><span className="live-dot" />مباشر</span>
-          <button id="refresh" className="button ghost" type="button" title="تحديث" onClick={() => void load()}>
-            <Icon name="refresh" /><span className="hide-narrow">تحديث</span>
+          <span id="live" className="live" hidden={!live}><span className="live-dot" />{tr("مباشر", "Live")}</span>
+          <button id="refresh" className="button ghost" type="button" title={tr("تحديث", "Refresh")}
+                  onClick={() => void load()}>
+            <Icon name="refresh" /><span className="hide-narrow">{tr("تحديث", "Refresh")}</span>
           </button>
-          <button id="theme" className="button ghost" type="button" title="فاتح / داكن"
-                  aria-label="تبديل الوضع الفاتح والداكن" onClick={toggleTheme}>
+          <LangButton />
+          <button id="theme" className="button ghost" type="button" title={tr("فاتح / داكن", "Light / dark")}
+                  aria-label={tr("تبديل الوضع الفاتح والداكن", "Switch between light and dark")} onClick={toggleTheme}>
             <Icon name="theme" />
           </button>
-          <button id="account" className="button ghost" type="button" title="حسابي"
+          <button id="account" className="button ghost" type="button" title={tr("حسابي", "My account")}
                   onClick={() => setSheet(myAccountJob(source, me, role))}>
-            <Icon name="user" /><span className="hide-narrow">حسابي</span>
+            <Icon name="user" /><span className="hide-narrow">{tr("حسابي", "My account")}</span>
           </button>
           {!source.demo && (
-            <button id="logout" className="button ghost" type="button" title="خروج" onClick={onSignOut}>
-              <Icon name="logout" /><span className="hide-narrow">خروج</span>
+            <button id="logout" className="button ghost" type="button" title={tr("خروج", "Sign out")}
+                    onClick={onSignOut}>
+              <Icon name="logout" /><span className="hide-narrow">{tr("خروج", "Sign out")}</span>
             </button>
           )}
         </div>
@@ -205,30 +220,32 @@ export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
 
       {source.demo ? (
         <p id="banner" className="banner" role="status">
-          {"عرض تجريبي ببيانات وهمية، بصلاحية «" + ROLE_NAME[role] + "». "}
-          <a href={"?demo=" + (admin ? "member" : "admin")}>
-            {"اعرضها بصلاحية «" + ROLE_NAME[admin ? "member" : "admin"] + "»"}
+          {tr("عرض تجريبي ببيانات وهمية، بصلاحية «" + roleName(role) + "». ",
+              "Demo with made-up data, as “" + roleName(role) + "”. ")}
+          <a href={withLang("?demo=" + otherRole)}>
+            {tr("اعرضها بصلاحية «" + roleName(otherRole) + "»", "See it as “" + roleName(otherRole) + "”")}
           </a>
-          {banner?.error && <><br />{banner.text}</>}
+          {failure && <><br />{errorText(failure.err)}</>}
         </p>
       ) : (
-        <p id="banner" className={"banner" + (banner?.error ? " error" : "")} role="status" hidden={!banner}>
-          {banner?.text}
+        <p id="banner" className={"banner" + (failure ? " error" : "")} role="status" hidden={!failure}>
+          {failure && errorText(failure.err)}
         </p>
       )}
 
       <Device status={data?.status ?? null} now={now} />
 
       {/* One filter row: it scopes every number, chart and list below. */}
-      <nav className="filters" aria-label="الفترة">
-        <div id="ranges" className="segmented" role="group" aria-label="الفترة الزمنية">
-          {RANGES.map(([key, label]) => (
+      <nav className="filters" aria-label={tr("الفترة", "Period")}>
+        <div id="ranges" className="segmented" role="group" aria-label={tr("الفترة الزمنية", "Time period")}>
+          {ranges().map(([key, label]) => (
             <button key={key} type="button" data-range={key} aria-pressed={key === range}
                     onClick={() => setRange(key)}>{label}</button>
           ))}
         </div>
         <span id="range-note" className="muted">
-          {today ? F_WEEKDAY.format(now) : "من " + F_DAY.format(rangeStart(range)) + " إلى اليوم"}
+          {today ? fmtWeekday(now)
+                 : tr("من " + fmtDay(rangeStart(range)) + " إلى اليوم", "From " + fmtDay(rangeStart(range)) + " to today")}
         </span>
       </nav>
 
@@ -239,19 +256,24 @@ export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
         <div className="grid two">
           <figure className="card" id="card-activity">
             <figcaption>
-              <h2 id="activity-title">{today ? "الدخول اليوم، ساعة بساعة" : "الدخول اليومي"}</h2>
-              <p className="muted" id="activity-sub">عدد مرات فتح الباب، حسب طريقة الدخول</p>
+              <h2 id="activity-title">
+                {today ? tr("الدخول اليوم، ساعة بساعة", "Entries today, hour by hour") : tr("الدخول اليومي", "Entries per day")}
+              </h2>
+              <p className="muted" id="activity-sub">
+                {tr("عدد مرات فتح الباب، حسب طريقة الدخول", "How many times the door was opened, by method")}
+              </p>
             </figcaption>
             <div className="legend" id="activity-legend">
               {GROUPS.map((g) => <span key={g.key}><i className="swatch" style={{ background: g.color }} />{g.name}</span>)}
             </div>
             <ColumnChart id="activity-chart" buckets={activity} series={GROUPS} anchor={anchor}
-                         summary={"الدخول: " + n(entries.length) + " في الفترة المختارة. استخدم السهمين للتنقل بين الأعمدة."} />
-            <ChartTable id="activity-table" first={today ? "الساعة" : "اليوم"} buckets={activity} series={GROUPS} />
+                         summary={tr("الدخول: " + n(entries.length) + " في الفترة المختارة. استخدم السهمين للتنقل بين الأعمدة.",
+                                     "Entries: " + n(entries.length) + " in the chosen period. Use the arrow keys to move between columns.")} />
+            <ChartTable id="activity-table" first={hourOrDay} buckets={activity} series={GROUPS} />
           </figure>
 
           <section className="card" id="card-insights">
-            <h2>تحليل الفترة</h2>
+            <h2>{tr("تحليل الفترة", "The period at a glance")}</h2>
             <Insights range={range} entries={entries} denied={denied} rings={rings} alarms={alarms} rows={rows} />
           </section>
         </div>
@@ -260,46 +282,52 @@ export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
           {!today && (
             <figure className="card" id="card-hours">
               <figcaption>
-                <h2>أوقات الدخول</h2>
-                <p className="muted">عدد مرات الدخول في كل ساعة من اليوم</p>
+                <h2>{tr("أوقات الدخول", "Entry times")}</h2>
+                <p className="muted">{tr("عدد مرات الدخول في كل ساعة من اليوم", "Entries in each hour of the day")}</p>
               </figcaption>
-              <ColumnChart id="hours-chart" buckets={hours} series={one("دخول", "var(--series-1)")} unit="دخول"
-                           summary="عدد مرات الدخول في كل ساعة من اليوم." />
-              <ChartTable id="hours-table" first="الساعة" buckets={hours} series={one("دخول", "var(--series-1)")} />
+              <ColumnChart id="hours-chart" buckets={hours} series={entrySeries} unit={tr("دخول", "entries")}
+                           summary={tr("عدد مرات الدخول في كل ساعة من اليوم.", "Entries in each hour of the day.")} />
+              <ChartTable id="hours-table" first={tr("الساعة", "Hour")} buckets={hours} series={entrySeries} />
             </figure>
           )}
           <figure className="card">
             <figcaption>
-              <h2>طريقة الدخول</h2>
-              <p className="muted">كم مرة استُخدمت كل طريقة</p>
+              <h2>{tr("طريقة الدخول", "Entry method")}</h2>
+              <p className="muted">{tr("كم مرة استُخدمت كل طريقة", "How often each method was used")}</p>
             </figcaption>
-            <Ranked id="methods" items={tally(entries, (r) => METHOD[r.method] || r.method || "أخرى")}
-                    unit="دخول" empty="لا يوجد دخول في هذه الفترة" />
+            <Ranked id="methods" items={tally(entries, (r) => methodName(r.method) || tr("أخرى", "Other"))}
+                    unit={tr("دخول", "entries")} empty={tr("لا يوجد دخول في هذه الفترة", "No entries in this period")} />
           </figure>
           <figure className="card">
             <figcaption>
-              <h2>من دخل</h2>
-              <p className="muted">عدد مرات الدخول لكل شخص معروف</p>
+              <h2>{tr("من دخل", "Who came in")}</h2>
+              <p className="muted">{tr("عدد مرات الدخول لكل شخص معروف", "Entries per known person")}</p>
             </figcaption>
-            <Ranked id="people" items={tally(entries, (r) => r.person)} unit="دخول"
-                    empty="لا يوجد دخول باسم معروف في هذه الفترة" />
+            <Ranked id="people" items={tally(entries, (r) => r.person)} unit={tr("دخول", "entries")}
+                    empty={tr("لا يوجد دخول باسم معروف في هذه الفترة", "No entries by a known person in this period")} />
           </figure>
         </div>
 
         <figure className="card" id="card-denied">
           <figcaption>
             <h2><Icon name="ban" className="status-critical" />
-              <span id="denied-title">{today ? "المحاولات المرفوضة اليوم، ساعة بساعة" : "المحاولات المرفوضة يوميًا"}</span>
+              <span id="denied-title">
+                {today ? tr("المحاولات المرفوضة اليوم، ساعة بساعة", "Refused attempts today, hour by hour")
+                       : tr("المحاولات المرفوضة يوميًا", "Refused attempts per day")}
+              </span>
             </h2>
             <p className="muted" id="denied-note">
-              {admin ? "رمز خاطئ، وجه أو بصمة أو كرت غير معروف، PIN خاطئ" : "رمز خاطئ، وجه أو بصمة أو كرت غير معروف"}
+              {admin ? tr("رمز خاطئ، وجه أو بصمة أو كرت غير معروف، PIN خاطئ",
+                          "Wrong code; unknown face, fingerprint or card; wrong PIN")
+                     : tr("رمز خاطئ، وجه أو بصمة أو كرت غير معروف", "Wrong code; unknown face, fingerprint or card")}
             </p>
           </figcaption>
-          <ColumnChart id="denied-chart" buckets={deniedBuckets} series={one("محاولات مرفوضة", "var(--critical)")}
-                       unit="محاولة مرفوضة" anchor={anchor} empty="لا توجد محاولات مرفوضة في هذه الفترة"
-                       summary={"المحاولات المرفوضة: " + n(denied.length) + " في الفترة المختارة."} />
-          <ChartTable id="denied-table" first={today ? "الساعة" : "اليوم"} buckets={deniedBuckets}
-                      series={one("محاولات مرفوضة", "var(--critical)")} />
+          <ColumnChart id="denied-chart" buckets={deniedBuckets} series={deniedSeries}
+                       unit={tr("محاولة مرفوضة", "refused attempts")} anchor={anchor}
+                       empty={tr("لا توجد محاولات مرفوضة في هذه الفترة", "No refused attempts in this period")}
+                       summary={tr("المحاولات المرفوضة: " + n(denied.length) + " في الفترة المختارة.",
+                                   "Refused attempts: " + n(denied.length) + " in the chosen period.")} />
+          <ChartTable id="denied-table" first={hourOrDay} buckets={deniedBuckets} series={deniedSeries} />
         </figure>
 
         {admin && <Gallery key={"gallery-" + range} source={source} rows={rows} onOpen={openViewer} onError={showError} />}
@@ -308,15 +336,17 @@ export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
 
         {/* Admins only; the database refuses everyone else anyway. */}
         {admin && (
-          <AccountsCard source={source} accounts={accounts} audit={audit} error={accountsError}
+          <AccountsCard source={source} accounts={accounts} audit={audit}
+                        error={accountsFailure ? errorText(accountsFailure.err) : ""}
                         reload={loadAccounts} openSheet={setSheet} />
         )}
       </main>
 
       <footer className="foot muted">
         <span id="foot-note">
-          {data && "آخر تحميل " + F_TIME.format(data.loadedAt) + " · " + n(rows.length) + " حدث في الفترة" +
-            (source.demo ? " · بيانات تجريبية" : "")}
+          {data && tr("آخر تحميل ", "Loaded at ") + fmtTime(data.loadedAt) + " · " +
+            count(rows.length, ["حدث واحد", "حدثان", "أحداث", "حدثًا"], ["event", "events"]) +
+            tr(" في الفترة", " in the period") + (source.demo ? tr(" · بيانات تجريبية", " · demo data") : "")}
         </span>
       </footer>
 

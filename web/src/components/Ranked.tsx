@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { n, sum } from "../lib/format";
+import { tr } from "../lib/i18n";
 import type { Tallied } from "../lib/stats";
 import { useTip } from "./Tooltip";
 
@@ -23,12 +24,12 @@ function Row({ item, max, total, unit }: { item: Tallied; max: number; total: nu
   const share = Math.round((item.value / total) * 100);
   function show() {
     const box = row.current!.getBoundingClientRect();
-    tip.show(item.name, [{ value: n(item.value), label: unit + " · " + share + "% من المجموع",
+    tip.show(item.name, [{ value: n(item.value), label: unit + " · " + share + tr("% من المجموع", "% of the total"),
                            color: "var(--series-1)" }], box.left + box.width / 2, box.top);
   }
   return (
     <div ref={row} className="ranked-row" tabIndex={0} role="group"
-         aria-label={`${item.name}: ${n(item.value)} ${unit}، ${share}%`}
+         aria-label={`${item.name}: ${n(item.value)} ${unit}${tr("، ", ", ")}${share}%`}
          onPointerEnter={show} onFocus={show} onPointerLeave={tip.hide} onBlur={tip.hide}>
       <span className="ranked-name">{item.name}</span>
       <div className="ranked-track">

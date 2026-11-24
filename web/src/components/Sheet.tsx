@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { errorText } from "../lib/errors";
+import { tr } from "../lib/i18n";
 import { Icon } from "./Icons";
 
 /** One small modal form: add an account, a new password, a confirmation, "my account". */
@@ -68,7 +69,7 @@ export function Sheet({ job, onDone }: { job: SheetJob | null; onDone: (message?
       <form id="sheet-form" noValidate onSubmit={submit}>
         <div className="sheet-head">
           <h2 id="sheet-title">{job?.title}</h2>
-          <button id="sheet-x" className="button ghost" type="button" aria-label="إغلاق" onClick={cancel}>
+          <button id="sheet-x" className="button ghost" type="button" aria-label={tr("إغلاق", "Close")} onClick={cancel}>
             <Icon name="close" />
           </button>
         </div>
@@ -77,10 +78,10 @@ export function Sheet({ job, onDone }: { job: SheetJob | null; onDone: (message?
         <div className="sheet-foot">
           <button id="sheet-submit" className={"button " + (job?.danger ? "danger" : "primary")} type="submit"
                   hidden={!job?.onSubmit} disabled={busy}>
-            {job?.submit || "حفظ"}
+            {job?.submit || tr("حفظ", "Save")}
           </button>
           <button id="sheet-cancel" className="button" type="button" onClick={cancel}>
-            {job?.onSubmit ? "إلغاء" : "إغلاق"}
+            {job?.onSubmit ? tr("إلغاء", "Cancel") : tr("إغلاق", "Close")}
           </button>
         </div>
       </form>

@@ -1,10 +1,17 @@
 import { useState } from "react";
 import { LOG_STEP } from "../lib/config";
 import { count, n, when } from "../lib/format";
+import { tr } from "../lib/i18n";
 import type { DoorEvent } from "../lib/types";
-import { CATEGORY, METHOD, describe } from "../lib/wording";
+import { PHOTO_CATEGORIES, categoryName, describe, methodName } from "../lib/wording";
 import { Icon } from "./Icons";
 import { Tabs, Tag } from "./Photos";
+
+/** Words to search in: both languages, so "face" finds «الوجه» and back. */
+function searchable(r: DoorEvent): string {
+  return [describe(r, "ar"), describe(r, "en"), r.person, methodName(r.method, "ar"), methodName(r.method, "en"),
+          categoryName(r.category, "ar"), categoryName(r.category, "en"), r.event, r.detail].join(" ").toLowerCase();
+}
 
 /** Every event of the period: tabs, a search box and pages of 25. */
 export function EventLog({ rows, admin, onOpen }: {
@@ -21,9 +28,7 @@ export function EventLog({ rows, admin, onOpen }: {
     } else if (current !== "all" && r.category !== current) {
       return false;
     }
-    if (!needle) return true;
-    return [describe(r), r.person, METHOD[r.method], CATEGORY[r.category], r.event, r.detail]
-      .join(" ").toLowerCase().includes(needle);
+    return !needle || searchable(r).includes(needle);
   });
   const pages = Math.max(1, Math.ceil(all.length / LOG_STEP));
   const at = Math.min(page, pages - 1);
@@ -34,13 +39,14 @@ export function EventLog({ rows, admin, onOpen }: {
     <section className="card" id="card-log">
       <div className="section-head">
         <div>
-          <h2>سجل الأحداث</h2>
-          <p className="muted" id="log-count">{count(all.length, "حدث واحد", "حدثان", "أحداث", "حدثًا")}</p>
+          <h2>{tr("سجل الأحداث", "Event log")}</h2>
+          <p className="muted" id="log-count">{count(all.length, ["حدث واحد", "حدثان", "أحداث", "حدثًا"], ["event", "events"])}</p>
         </div>
         <div className="log-tools">
           <Tabs id="log-tabs" current={current} choose={(t) => { setTab(t); setPage(0); }}
-                extra={admin ? [["other", "أخرى"]] : []} />
-          <input id="log-search" type="search" placeholder="بحث: اسم، طريقة…" aria-label="بحث في السجل"
+                extra={admin ? [["other", tr("أخرى", "Other")]] : []} />
+          <input id="log-search" type="search" placeholder={tr("بحث: اسم، طريقة…", "Search: name, method…")}
+                 aria-label={tr("بحث في السجل", "Search the log")}
                  value={search} onChange={(e) => { setSearch(e.target.value); setPage(0); }} />
         </div>
       </div>
@@ -48,13 +54,14 @@ export function EventLog({ rows, admin, onOpen }: {
         <table className="log">
           <thead>
             <tr>
-              <th>الوقت</th><th>النوع</th><th>الوصف</th><th className="who">الشخص</th>
-              {admin && <th id="log-photo-head">صورة</th>}
+              <th>{tr("الوقت", "Time")}</th><th>{tr("النوع", "Type")}</th><th>{tr("الوصف", "What happened")}</th>
+              <th className="who">{tr("الشخص", "Person")}</th>
+              {admin && <th id="log-photo-head">{tr("صورة", "Picture")}</th>}
             </tr>
           </thead>
           <tbody id="log-body">
             {!shown.length && (
-              <tr><td colSpan={admin ? 5 : 4} className="empty">لا توجد أحداث مطابقة</td></tr>
+              <tr><td colSpan={admin ? 5 : 4} className="empty">{tr("لا توجد أحداث مطابقة", "No matching events")}</td></tr>
             )}
             {shown.map((r) => (
               <tr key={r.uid}>
@@ -64,10 +71,13 @@ export function EventLog({ rows, admin, onOpen }: {
                 <td className="who">{r.person || "—"}</td>
                 {admin && (
                   <td>
-                    {r.photo && (
+                    {r.photo ? (
                       <button className="link" type="button" onClick={() => onOpen(withPhotos, withPhotos.indexOf(r))}>
-                        <Icon name="camera" />عرض
+                        <Icon name="camera" />{tr("عرض", "View")}
                       </button>
+                    ) : PHOTO_CATEGORIES.includes(r.category) && (
+                      // No picture (the camera was off, or gave only black frames): say so.
+                      <span className="no-photo"><Icon name="nophoto" />{tr("بدون صورة", "No picture")}</span>
                     )}
                   </td>
                 )}
@@ -78,12 +88,12 @@ export function EventLog({ rows, admin, onOpen }: {
       </div>
       <div className="pager">
         <button id="log-prev" className="button" type="button" disabled={at <= 0} onClick={() => setPage(at - 1)}>
-          الأحدث
+          {tr("الأحدث", "Newer")}
         </button>
-        <span id="log-page" className="muted">{"صفحة " + n(at + 1) + " من " + n(pages)}</span>
+        <span id="log-page" className="muted">{tr("صفحة " + n(at + 1) + " من " + n(pages), "Page " + n(at + 1) + " of " + n(pages))}</span>
         <button id="log-next" className="button" type="button" disabled={at >= pages - 1}
                 onClick={() => setPage(at + 1)}>
-          الأقدم
+          {tr("الأقدم", "Older")}
         </button>
       </div>
     </section>

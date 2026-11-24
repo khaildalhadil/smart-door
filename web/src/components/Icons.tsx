@@ -29,6 +29,8 @@ export function IconSprite() {
         <g id="i-plus"><path d="M12 5v14M5 12h14" /></g>
         <g id="i-trash"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></g>
         <g id="i-card"><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 14h4" /><path d="M16 9.5a3 3 0 0 1 0 4M18.2 8a5.5 5.5 0 0 1 0 7" /></g>
+        <g id="i-globe"><circle cx="12" cy="12" r="9" /><path d="M3 12h18" /><path d="M12 3c2.5 2.7 3.7 5.7 3.7 9s-1.2 6.3-3.7 9c-2.5-2.7-3.7-5.7-3.7-9s1.2-6.3 3.7-9z" /></g>
+        <g id="i-nophoto"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" /><circle cx="12" cy="13" r="3.5" /><path d="M3.5 3.5l17 17" /></g>
         <g id="i-photo"><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="9" cy="10" r="2" /><path d="M21 16l-5-5-8 8" /></g>
       </defs>
     </svg>

@@ -1,6 +1,6 @@
 /** Made-up history, so the dashboard can be seen without Supabase.
  *  Accounts live in memory under the same rules as the database. */
-import { F_TIME, startOfDay } from "./format";
+import { fmtTime, startOfDay } from "./format";
 import { EMAIL, MIN_PASSWORD } from "./passwords";
 import type { Account, AuditRow, DoorEvent, DoorStatus, Me, Role, Source } from "./types";
 import { visibleTo } from "./wording";
@@ -25,7 +25,7 @@ function picture(category: string, t: number): string {
     '<rect width="320" height="240" fill="#2b3038"/><rect y="170" width="320" height="70" fill="#22262d"/>' +
     `<circle cx="${160 + shift}" cy="96" r="38" fill="#c9a98f"/>` +
     `<rect x="${100 + shift}" y="140" width="120" height="100" rx="18" fill="${tint}"/>` +
-    `<text x="12" y="228" font-family="monospace" font-size="15" fill="#fff">${F_TIME.format(t)}</text></svg>`;
+    `<text x="12" y="228" font-family="monospace" font-size="15" fill="#fff">${fmtTime(t)}</text></svg>`;
   return "data:image/svg+xml," + encodeURIComponent(markup);
 }
 
