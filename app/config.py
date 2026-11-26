@@ -109,20 +109,29 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "mirror": "true",
         "detector_model": "models/face_detection_yunet_2023mar.onnx",
         "recognizer_model": "models/face_recognition_sface_2021dec.onnx",
+        # false: the door screen has a "Scan face" button, and a face is only
+        # checked after someone presses it: nobody walking past is recognised,
+        # photographed or reported.  true: the camera checks every face it
+        # sees, all the time (no button).
+        "auto_scan": "false",
+        # How long one press of "Scan face" looks for an enrolled face.
+        "scan_seconds": "5",
         # Cosine similarity a face must reach against an enrolled face.  OpenCV
         # suggests 0.363 for SFace; higher means fewer false accepts.
         "match_threshold": "0.45",
         # Consecutive matching frames before the door opens.
         "confirm_frames": "3",
         # Minimum face width in camera pixels: only someone standing close to
-        # the door is considered, not people walking past.
+        # the door is considered, not people walking past (with the button: a
+        # smaller face is told to come closer).
         "min_face_size": "90",
         # YuNet detection confidence floor.
         "detect_score": "0.8",
         # Pictures taken per face enrolment.
         "samples": "5",
-        # Pause after a face unlock before the next one, once the door relocks.
-        # The same person must also step out of view before opening it again.
+        # auto_scan = true only: pause after a face unlock before the next one,
+        # once the door relocks.  The same person must also step out of view
+        # before opening it again.
         "cooldown_seconds": "5",
     },
     "fire": {
@@ -205,8 +214,9 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "unknown_fingerprint": "true",  # a finger that is not enrolled
         "unknown_card": "true",         # a card that is not registered
         "wrong_pin": "true",            # wrong sign-in PIN on the panel
-        # Anyone the camera does not know (at most once per person at the
-        # door, and once every 10 s).
+        # Someone pressed "Scan face" and was not recognised (at most once
+        # every 10 s).  With [face] auto_scan = true: anyone the camera does
+        # not know, at most once per person at the door and once every 10 s.
         "unknown_face": "true",
         "temp_code_used": "true",       # the guest used the one-time code
         # Every entry: keypad, face, finger, card, menu, WhatsApp, visitor.

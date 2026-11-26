@@ -11,20 +11,34 @@ Only those embeddings are stored, with the user record in data/users.json --
 never a photo.
 
 One worker thread owns the camera for the app's whole life.  The screen on
-display tells it what to do: :meth:`FaceService.watch` (Home: identify whoever
-stands at the door) or :meth:`FaceService.enrol` (collect pictures of one
-face); otherwise it idles with the camera open.  Results come back through
-callbacks on the worker thread, which the Tk layer wraps in ``App.post``,
-exactly like the fingerprint worker.
+display tells it what to do: :meth:`FaceService.preview_only` (just the live
+picture), :meth:`FaceService.scan` (Home: one check after someone pressed
+"Scan face"), :meth:`FaceService.watch` (Home with ``[face] auto_scan``:
+identify whoever stands at the door) or :meth:`FaceService.enrol` (collect
+pictures of one face); otherwise it idles with the camera open.  Results come
+back through callbacks on the worker thread, which the Tk layer wraps in
+``App.post``, exactly like the fingerprint worker.
 
-Unlock policy while watching:
+Unlock policy, the same in both Home modes:
 
 * only the largest face counts, and only once it is ``min_face_size`` wide,
   so people walking past further away are ignored;
-* it must match the same enrolled user on ``confirm_frames`` frames in a row;
-* after a match nothing more happens until the door has relocked and
-  ``cooldown_seconds`` have passed, and the same person opens it again only
-  after stepping out of view: lingering at the door does not keep it open.
+* it must match the same enrolled user on ``confirm_frames`` frames in a row.
+
+``[face] auto_scan = false`` (the default): the "Scan face" button.  Nothing
+is recognised, photographed or reported until someone presses it.  A press
+looks for ``scan_seconds`` and ends once, with a :class:`ScanResult`: a match,
+an unknown face (compared ``UNKNOWN_FRAMES`` times without a match; logged as
+``face.deny``, which brings the picture and the WhatsApp alert), no face, too
+far, camera offline or cancelled.  Then the camera shows the picture only.
+
+``auto_scan = true``: always watching, every face in view is checked.  After
+a match nothing more happens until the door has relocked and
+``cooldown_seconds`` have passed, and the same person opens it again only
+after stepping out of view: lingering at the door does not keep it open.
+An unknown face is logged once per visit.
+
+Either way at most one "unknown face" line is logged every ``DENY_LOG_GAP``.
 """
 
 from __future__ import annotations
@@ -58,8 +72,9 @@ BLANK_STD = 4.0
 SNAPSHOT_TRIES = 8
 BLANK_LOG_EVERY = 600.0
 
-MODE_IDLE = "idle"
+MODE_IDLE = "idle"      # with a preview size: the live picture, nothing checked
 MODE_WATCH = "watch"
+MODE_SCAN = "scan"
 MODE_ENROL = "enrol"
 
 # What the camera sees, reported to the screen on every change.
@@ -72,6 +87,15 @@ FACE_UNKNOWN = "unknown"    # a face that matches nobody
 FACE_PAUSED = "paused"      # just matched, waiting out the cooldown
 FACE_SEEN = "seen"          # matched earlier and still in view: must step away
 CAMERA_OFFLINE = "offline"
+CAMERA_ONLINE = "online"    # picture only: the camera works (back after offline)
+
+# How one Scan face press ended (ScanResult.outcome).
+SCAN_MATCH = "match"            # an enrolled face, confirmed: the screen opens
+SCAN_UNKNOWN = "unknown"        # a close face that matched nobody
+SCAN_NO_FACE = "no_face"        # nobody looked at the camera
+SCAN_FAR = "far"                # only faces too small: too far from the door
+SCAN_OFFLINE = "offline"        # no working camera
+SCAN_CANCELLED = "cancelled"    # the screen stopped it
 
 # Preview box colour per state (BGR), matching app/ui/theme.py.
 BOX_COLOURS = {
@@ -218,6 +242,16 @@ class Gallery:
 
 # ---------------------------------------------------------------------- service
 @dataclass
+class ScanResult:
+    """How one :meth:`FaceService.scan` ended."""
+
+    outcome: str                 # SCAN_MATCH, SCAN_UNKNOWN, ...
+    user_id: str | None = None   # match: who; unknown: the closest enrolled user
+    name: str = ""               # ... and their name
+    score: float = 0.0           # match: its score; unknown: the best one seen
+
+
+@dataclass
 class _Job:
     """What the worker is doing for the screen on display."""
 
@@ -233,7 +267,7 @@ class _Job:
     last_face: float = 0.0
     next_check: float = 0.0
     next_preview: float = 0.0
-    # watch
+    # watch (the streak also for scan)
     streak_user: str | None = None
     streak: int = 0
     misses: int = 0
@@ -241,7 +275,14 @@ class _Job:
     reported: bool = False
     quiet_until: float = 0.0
     let_in: str | None = None   # matched on this visit; cleared once they leave
-    # enrol
+    # scan
+    done: bool = False          # ended: on_done has been called
+    checks: int = 0             # faces looked for
+    compared: int = 0           # ... a close one compared with the enrolled faces
+    far: int = 0                # ... only one too small
+    best_user: str | None = None   # closest enrolled user so far, for "unknown"
+    best_score: float = 0.0
+    # enrol (the deadline also for scan)
     user_id: str | None = None
     samples: list = field(default_factory=list)
     last_sample: float = 0.0
@@ -349,6 +390,41 @@ class FaceService:
         return self._start(_Job(mode=MODE_WATCH, preview=preview, on_state=on_state,
                                 on_match=on_match))
 
+    def preview_only(self, on_state=None, preview=None) -> int:
+        """Just the live picture until :meth:`release`: no detection, no
+        recognition, no events.  ``on_state`` gets CAMERA_OFFLINE when the
+        camera goes and CAMERA_ONLINE when it is back."""
+        return self._start(_Job(preview=preview, on_state=on_state))
+
+    def scan(self, on_state=None, on_done=None, preview=None) -> int:
+        """One press of "Scan face": look for an enrolled face for ``[face]
+        scan_seconds``, by the same rules as :meth:`watch`, and stop at the
+        first confirmed match.  ``on_state(state)`` on every change meanwhile,
+        then ``on_done(ScanResult)`` exactly once.  An unknown face is logged
+        (``face.deny``).
+
+        Afterwards the token goes on as :meth:`preview_only` until
+        :meth:`release`; :meth:`cancel` ends the scan early.
+        """
+        seconds = max(1.0, self.config.getfloat("face", "scan_seconds", 5.0))
+        job = _Job(mode=MODE_SCAN, preview=preview, on_state=on_state, on_done=on_done,
+                   deadline=time.monotonic() + seconds)
+        token = self._start(job)
+        worker = self._thread
+        if self._online is False or worker is None or not worker.is_alive():
+            self._end_scan(job, ScanResult(SCAN_OFFLINE))   # no camera to wait for
+        return token
+
+    def cancel(self, token: int) -> bool:
+        """End the running :meth:`scan` ``token`` now: its ``on_done`` gets a
+        cancelled result, on this thread, and the picture goes on.  False when
+        that scan is over already (its result has been or is being sent)."""
+        with self._lock:
+            job = self._job
+        if job.token != token or job.mode != MODE_SCAN:
+            return False
+        return self._end_scan(job, ScanResult(SCAN_CANCELLED))
+
     def enrol(self, user_id: str | None, on_state=None, on_progress=None, on_done=None,
               preview=None) -> int:
         """Collect ``face.samples`` pictures of one face for ``user_id`` (None for
@@ -380,6 +456,32 @@ class FaceService:
             if self._job.token == token:
                 self._job = _Job()
                 self._preview = None
+
+    def _current(self, job: _Job) -> bool:
+        """Checked right before every callback from the worker: a job that was
+        released or replaced must not call its screen any more."""
+        with self._lock:
+            return self._job is job
+
+    def _end_scan(self, job: _Job, result: ScanResult) -> bool:
+        """End the scan ``job`` once: log an unknown face, call
+        ``on_done(result)``, and let its token go on with the picture alone.
+        False, and nothing is called, when it has ended already or is not the
+        current job any more."""
+        with self._lock:
+            if self._job is not job or job.done:
+                return False
+            job.done = True
+            self._job = _Job(token=job.token, preview=job.preview, on_state=job.on_state,
+                             state=CAMERA_ONLINE if self._online else CAMERA_OFFLINE)
+        if result.outcome == SCAN_UNKNOWN:
+            now = time.monotonic()
+            if self.events and now - self._last_deny_log >= DENY_LOG_GAP:
+                self._last_deny_log = now
+                self.events.warning("face.deny", "unknown face at the Face button" + (
+                    f" (closest {result.name} {result.score:.2f})" if result.user_id else ""))
+        _call(job.on_done, result)
+        return True
 
     def preview_frame(self) -> tuple[int, bytes] | None:
         """Latest ``(sequence, PPM bytes)`` for the screen's preview."""
@@ -491,6 +593,10 @@ class FaceService:
             if self.events:
                 self.events.error("face.backend", self._reason)
             self._set_online(False)
+            with self._lock:
+                job = self._job
+            if job.mode == MODE_SCAN:
+                self._end_scan(job, ScanResult(SCAN_OFFLINE))
             return
         if self.events:
             self.events.info("face.backend",
@@ -500,12 +606,18 @@ class FaceService:
         while not self._stop.is_set():
             with self._lock:
                 job = self._job
+            # Checked on every turn, frames or not, so a scan always ends.
+            if job.mode == MODE_SCAN and time.monotonic() >= job.deadline:
+                self._end_scan(job, self._scan_verdict(job))
+                continue
             if cap is None:
                 cap = self._open_camera()
                 if cap is None:
                     self._set_online(False)
                     self._fail_snapshots()
                     self._report(job, CAMERA_OFFLINE)
+                    if job.mode == MODE_SCAN:
+                        self._end_scan(job, ScanResult(SCAN_OFFLINE))
                     self._stop.wait(3.0)
                     continue
                 misses = 0
@@ -579,7 +691,8 @@ class FaceService:
     def _report(self, job: _Job, state: str) -> None:
         if state != job.state:
             job.state = state
-            _call(job.on_state, state)
+            if self._current(job):
+                _call(job.on_state, state)
 
     # ------------------------------------------------------------- processing
     def _process(self, engine: FaceEngine, job: _Job, frame, check: bool,
@@ -592,13 +705,18 @@ class FaceService:
             faces = job.faces = engine.detect(frame)
             if faces:
                 job.last_face = now
-            awake = job.mode == MODE_ENROL or now - job.last_face < AWAKE_SECONDS
+            awake = (job.mode in (MODE_ENROL, MODE_SCAN)
+                     or now - job.last_face < AWAKE_SECONDS)
             job.next_check = now + 1.0 / (ACTIVE_FPS if awake else IDLE_FPS)
             if job.mode == MODE_WATCH:
                 state = self._watch_step(engine, job, frame, faces)
+            elif job.mode == MODE_SCAN:
+                state = self._scan_step(engine, job, frame, faces)
             else:
                 state = self._enrol_step(engine, job, frame, faces)
             self._report(job, state)
+        elif job.mode == MODE_IDLE:
+            self._report(job, CAMERA_ONLINE)   # picture only: frames are coming
         if draw:
             job.next_preview = now + 1.0 / PREVIEW_FPS
             self._render(frame, job.faces[0] if job.faces else None, job.state, job)
@@ -636,7 +754,8 @@ class FaceService:
             job.let_in = user_id
             job.quiet_until = (now + cfg.unlock_seconds
                                + cfg.getfloat("face", "cooldown_seconds", 5.0))
-            _call(job.on_match, user_id, score)
+            if self._current(job):
+                _call(job.on_match, user_id, score)
             return FACE_MATCH
 
         job.streak = 0
@@ -652,6 +771,47 @@ class FaceService:
                     "face.deny", "unknown face" + (
                         f" (closest {closest.name} {score:.2f})" if closest else ""))
         return FACE_UNKNOWN
+
+    def _scan_step(self, engine, job: _Job, frame, faces) -> str:
+        """One look during a Scan face press: the watch's rules, without its
+        cooldown and "step away" (the press itself asks to be let in)."""
+        cfg = self.config
+        job.checks += 1
+        face = faces[0] if faces else None
+        if face is None or face[2] < cfg.getint("face", "min_face_size", 90):
+            job.streak = 0
+            if face is None:
+                return FACE_NONE
+            job.far += 1
+            return FACE_FAR
+
+        self._gallery.refresh(self.users)
+        user_id, score = self._gallery.best(engine.embed(frame, face))
+        job.compared += 1
+        if user_id is not None and score > job.best_score:
+            job.best_user, job.best_score = user_id, score
+        if user_id is None or score < cfg.getfloat("face", "match_threshold", 0.45):
+            job.streak = 0
+            return FACE_CHECKING
+        job.streak = job.streak + 1 if user_id == job.streak_user else 1
+        job.streak_user = user_id
+        if job.streak < max(1, cfg.getint("face", "confirm_frames", 3)):
+            return FACE_CHECKING
+        user = self.users.by_id(user_id)
+        self._end_scan(job, ScanResult(SCAN_MATCH, user_id, user.name if user else "", score))
+        return FACE_MATCH
+
+    def _scan_verdict(self, job: _Job) -> ScanResult:
+        """How a scan ends when its time is up without a match.  "Unknown"
+        takes ``UNKNOWN_FRAMES`` looks at a close face; a mere glance counts
+        as no face (or too far)."""
+        if job.compared >= UNKNOWN_FRAMES:
+            user = self.users.by_id(job.best_user) if job.best_user else None
+            return ScanResult(SCAN_UNKNOWN, user.id if user else None,
+                              user.name if user else "", job.best_score)
+        if job.far:
+            return ScanResult(SCAN_FAR)
+        return ScanResult(SCAN_NO_FACE if job.checks else SCAN_OFFLINE)
 
     def _enrol_step(self, engine, job: _Job, frame, faces) -> str:
         cfg = self.config
@@ -684,7 +844,8 @@ class FaceService:
         job.samples.append(embedding)
         job.last_sample = now
         total = max(1, cfg.getint("face", "samples", 5))
-        _call(job.on_progress, len(job.samples), total)
+        if self._current(job):
+            _call(job.on_progress, len(job.samples), total)
         if len(job.samples) < total:
             return FACE_CHECKING
 
@@ -703,7 +864,8 @@ class FaceService:
 
     def _finish(self, job: _Job, result: OpResult) -> None:
         job.finished = True
-        _call(job.on_done, result)
+        if self._current(job):
+            _call(job.on_done, result)
 
     def _render(self, frame, face, state: str, job: _Job) -> None:
         import cv2

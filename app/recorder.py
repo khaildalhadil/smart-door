@@ -296,6 +296,13 @@ def classify(event: str, message: str, level: str = "INFO",
                           text=f"⚠️ {m.group(1)} حاول يدخل بوجهه، وحسابه معطّل.",
                           text_en=f"⚠️ {m.group(1)} tried to come in with face recognition, "
                                   "but the account is disabled.")
+        # The Face button (app/face.py): someone asked for a scan and was not known.
+        if message.startswith("unknown face at the Face button"):
+            return Record(H.DENIED, "face", photo="face_deny", alert="face",
+                          alert_event="unknown", setting="unknown_face", needs_photo=True,
+                          text="👤 شخص غير معروف ضغط زر الوجه وحاول يفتح الباب.",
+                          text_en="👤 An unknown person pressed the Face button and tried "
+                                  "to open the door.")
         if message.startswith("unknown face"):
             return Record(H.DENIED, "face", photo="face_deny", alert="face",
                           alert_event="unknown", setting="unknown_face",

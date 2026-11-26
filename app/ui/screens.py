@@ -7,8 +7,9 @@ import threading
 import tkinter as tk
 
 from .. import doorbell as bell
-from ..face import (CAMERA_OFFLINE, FACE_CHECKING, FACE_FAR, FACE_NONE, FACE_SEEN,
-                    FACE_UNKNOWN)
+from ..face import (CAMERA_OFFLINE, CAMERA_ONLINE, FACE_CHECKING, FACE_FAR, FACE_NONE,
+                    FACE_SEEN, FACE_UNKNOWN, SCAN_CANCELLED, SCAN_FAR, SCAN_MATCH,
+                    SCAN_NO_FACE, SCAN_OFFLINE, SCAN_UNKNOWN)
 from ..users import ROLE_ADMIN
 from . import theme
 from .app import Screen
@@ -50,12 +51,30 @@ FACE_HINTS = {
     CAMERA_OFFLINE: ("Camera offline", theme.DANGER_HI),
 }
 
+# The "Scan face" button ([face] auto_scan = false): a face is checked only
+# after a press.  Banners: same width limit as above.
+FACE_BUTTON_TEXT = "Scan face"
+FACE_REST_HINT = ("Press Scan face to open", theme.MUTED)
+SCAN_HINTS = {state: FACE_HINTS[state]
+              for state in (FACE_NONE, FACE_FAR, FACE_CHECKING, CAMERA_OFFLINE)}
+FACE_MSG_DENIED = "Access denied — face not recognized"
+# Outcome -> (banner, kind, hint under the picture or None for the rest hint).
+SCAN_MSG = {
+    SCAN_UNKNOWN: (FACE_MSG_DENIED, "error", FACE_HINTS[FACE_UNKNOWN]),
+    SCAN_NO_FACE: ("No face seen — look at the camera", "warn", None),
+    SCAN_FAR: ("Too far — come closer and try again", "warn", None),
+    SCAN_OFFLINE: ("Camera offline", "error", FACE_HINTS[CAMERA_OFFLINE]),
+    SCAN_CANCELLED: ("Scan cancelled", "muted", None),
+}
+# The picture never shrinks below this to make room for the buttons.
+CAMERA_MIN_HEIGHT = 120
+
 
 class HomeScreen(Screen):
     """The idle screen: door-code keypad, lock state, doorbell, sign-in, plus
     fingerprint scanning and the live camera when those are in use.  An
-    enrolled face in front of the camera, or an enrolled finger on the sensor,
-    opens the door by itself."""
+    enrolled finger on the sensor opens the door by itself; an enrolled face
+    after a press of "Scan face" (or by itself with ``[face] auto_scan``)."""
 
     def __init__(self, app, notice: tuple[str, str] | None = None):
         super().__init__(app)
@@ -63,6 +82,9 @@ class HomeScreen(Screen):
         self._scanning = False
         self._checking = False
         self._locked_out = False
+        self._face_scanning = False
+        self._scan_id = 0
+        self._hint_job = None
 
         left = tk.Frame(self, bg=theme.BG, width=470)
         left.pack(side="left", fill="y", padx=(theme.PAD, 0), pady=theme.PAD)
@@ -98,21 +120,36 @@ class HomeScreen(Screen):
                                       fg=theme.MUTED, wraplength=280)
             self.state_sub.pack(expand=True, fill="both", pady=(0, 14))
 
-        # Doorbell: a picture and "open?" go to the owner on WhatsApp.
+        # [face] auto_scan: the camera checks every face it sees.  Otherwise
+        # it shows the picture only, until someone presses "Scan face", full
+        # width right under it.
         doorbell = self.ctx.doorbell
+        bell_on = doorbell is not None and doorbell.enabled
+        self._face_auto = cfg.getbool("face", "auto_scan", False)
+        self.face_button = None
+        if self.camera and not self._face_auto:
+            # Three rows of buttons with the bell: slimmer ones, and
+            # _fit_camera() then shrinks the picture to make room.
+            row_pad = 4 if bell_on else 8
+            self.face_button = TouchButton(right, FACE_BUTTON_TEXT, self._scan_face,
+                                           kind="primary")
+            self.face_button.pack(fill="x", ipady=row_pad, pady=(0, theme.PAD))
+        else:
+            # Three rows share the column once the bell is there: slimmer buttons.
+            row_pad = 8 if bell_on else 12
+
+        # Doorbell: a picture and "open?" go to the owner on WhatsApp.
         self.bell_button = None
         self._bell_job = None
-        if doorbell is not None and doorbell.enabled:
+        if bell_on:
             self.bell_button = TouchButton(right, BELL_TEXT, self._ring, kind="warn")
-            self.bell_button.pack(fill="x", ipady=8 if self.camera else 12,
+            self.bell_button.pack(fill="x", ipady=row_pad if self.camera else 12,
                                   pady=(0, theme.PAD))
 
         # With the camera taking the room, the two buttons share one row.
         row = tk.Frame(right, bg=theme.BG) if self.camera else right
         if self.camera:
             row.pack(fill="x")
-        # Three rows share the column once the bell is there: slimmer buttons.
-        row_pad = 8 if self.bell_button else 12
         fp = self.ctx.fingerprints
         self.fp_button = None
         self._fp_token = None
@@ -133,8 +170,10 @@ class HomeScreen(Screen):
             sign_in.pack(fill="x", ipady=12)
         if self.ctx.lock.backend.simulated and cfg.getbool("ui", "simulation_button", True):
             TouchButton(right, "Simulate unlock (no GPIO)", self._simulate, kind="warn",
-                        font=theme.FONT_BODY_BOLD).pack(fill="x", ipady=8,
-                                                       pady=(theme.PAD, 0))
+                        font=theme.FONT_BODY_BOLD).pack(
+                fill="x", ipady=row_pad if self.face_button else 8, pady=(theme.PAD, 0))
+        if self.face_button:
+            self._fit_camera(right)
 
         if not self.ctx.passcode.is_configured:
             self.prompt.configure(text="No door passcode set — sign in to set one",
@@ -143,11 +182,19 @@ class HomeScreen(Screen):
             self.msg.show(*notice)
         self._tick_lockout()
         self._bell_tick()   # a ring may still be waiting from before a menu visit
-        if self.camera:
+        if self.camera and self._face_auto:
             self.camera.hint(*FACE_HINTS[FACE_NONE])
             self._face_token = faces.watch(
                 on_state=lambda state: app.post(self._face_state, state),
                 on_match=lambda uid, score: app.post(self._face_match, uid, score),
+                preview=self.camera.size,
+            )
+        elif self.camera:
+            # Nothing is checked until the button is pressed: just the picture.
+            self.camera.hint(*FACE_REST_HINT)
+            scan_id = self._scan_id
+            self._face_token = faces.preview_only(
+                on_state=lambda state: app.post(self._scan_state, scan_id, state),
                 preview=self.camera.size,
             )
         if self._fp_auto:
@@ -164,6 +211,9 @@ class HomeScreen(Screen):
         if self._bell_job is not None:
             self.after_cancel(self._bell_job)
             self._bell_job = None
+        if self._hint_job is not None:
+            self.after_cancel(self._hint_job)
+            self._hint_job = None
         if self._scanning:
             self.ctx.fingerprints.cancel()
         if self._fp_token is not None:
@@ -438,7 +488,8 @@ class HomeScreen(Screen):
             self.camera.clear()
 
     def _face_match(self, user_id: str, score: float) -> None:
-        """The camera worker saw an enrolled face on enough frames in a row."""
+        """The camera worker saw an enrolled face on enough frames in a row
+        (watching, or after a press of Scan face)."""
         if not self.alive:
             return
         events = self.ctx.events
@@ -446,16 +497,94 @@ class HomeScreen(Screen):
         if user is None:
             events.warning("face.deny", "matched a user who no longer exists")
             self.camera.hint(*FACE_HINTS[FACE_UNKNOWN])
+            if self.face_button:
+                self.msg.show(FACE_MSG_DENIED, "error")
             return
         if not user.enabled:
             events.warning("face.deny", f"{user.name} is disabled")
             self.camera.hint(f"Access for {user.name} is disabled", theme.DANGER_HI)
+            if self.face_button:
+                self.msg.show(f"Access for {user.name} is disabled.", "error")
             return
         if self.ctx.lock.unlock(reason=f"face {user.name} {score:.2f}"):
             self.msg.show(f"Welcome, {user.name}", "ok")
             self.camera.hint(f"Welcome, {user.name}", theme.OK_HI)
         else:
             self.msg.show("Relay fault — door not opened.", "error")
+
+    def _scan_face(self) -> None:
+        """The Scan face button: one check, or cancel the one running."""
+        faces = self.ctx.faces
+        if self._face_scanning:
+            faces.cancel(self._face_token)   # its "cancelled" result follows
+            return
+        if self._hint_job is not None:
+            self.after_cancel(self._hint_job)
+            self._hint_job = None
+        self._scan_id += 1
+        scan_id = self._scan_id   # callbacks of an earlier scan are ignored
+        self._face_scanning = self.keep_alive = True
+        self.face_button.configure(text="Cancel")
+        self.face_button.set_kind("danger")
+        self.camera.hint(*FACE_HINTS[FACE_NONE])
+        self._face_token = faces.scan(
+            on_state=lambda state: self.app.post(self._scan_state, scan_id, state),
+            on_done=lambda result: self.app.post(self._scan_done, scan_id, result),
+            preview=self.camera.size,
+        )
+
+    def _scan_state(self, scan_id: int, state: str) -> None:
+        """What the camera sees during a scan; at rest (picture only), only
+        whether the camera works."""
+        if not self.alive or scan_id != self._scan_id:
+            return
+        if state == CAMERA_OFFLINE:
+            self.camera.hint(*FACE_HINTS[CAMERA_OFFLINE])
+            self.camera.clear()
+        elif self._face_scanning:
+            if state in SCAN_HINTS:
+                self.camera.hint(*SCAN_HINTS[state])
+        elif state == CAMERA_ONLINE and self._hint_job is None:
+            self.camera.hint(*FACE_REST_HINT)
+
+    def _scan_done(self, scan_id: int, result) -> None:
+        """End of a scan started with the button (``app.face.ScanResult``)."""
+        if not self.alive or scan_id != self._scan_id or not self._face_scanning:
+            return
+        self._face_scanning = self.keep_alive = False
+        self.face_button.configure(text=FACE_BUTTON_TEXT)
+        self.face_button.set_kind("primary")
+        if result.outcome == SCAN_MATCH:
+            self._face_match(result.user_id, result.score)
+        else:
+            text, kind, hint = SCAN_MSG.get(result.outcome, SCAN_MSG[SCAN_NO_FACE])
+            self.msg.show(text, kind)
+            self.camera.hint(*(hint or FACE_REST_HINT))
+        # The result stays under the picture as long as the banner.
+        seconds = self.ctx.config.getfloat("ui", "message_seconds", 3.0)
+        self._hint_job = self.after(int(seconds * 1000), self._rest_hint)
+
+    def _rest_hint(self) -> None:
+        self._hint_job = None
+        if not self.alive or self._face_scanning:
+            return
+        if self.ctx.faces.camera_online:
+            self.camera.hint(*FACE_REST_HINT)
+        else:
+            self.camera.hint(*FACE_HINTS[CAMERA_OFFLINE])
+
+    def _fit_camera(self, column: tk.Frame) -> None:
+        """Shrink the picture (4:3) just enough for everything in ``column``
+        to fit the screen, so the buttons never cut off the hint or the lock
+        state.  Measured by Tk, so right for any set of buttons."""
+        room = (self.ctx.config.getint("ui", "height", 480) - theme.STATUS_HEIGHT
+                - 2 * theme.PAD)
+        self.state_text.configure(text="LOCKED")   # as tall as it will be
+        self.update_idletasks()
+        excess = column.winfo_reqheight() - room
+        if excess > 0:
+            height = max(CAMERA_MIN_HEIGHT, (self.camera.size[1] - excess) // 3 * 3)
+            self.camera.resize(height // 3 * 4, height)
 
     # -------------------------------------------------------------------- misc
     def _simulate(self) -> None:

@@ -307,6 +307,12 @@ class CameraView(tk.Label):
             self._photo.configure(data=frame[1], format="PPM")
         self._job = self.after(self.POLL_MS, self._tick)
 
+    def resize(self, width: int, height: int) -> None:
+        """Another picture size.  Pass the new ``size`` to the face job started
+        afterwards: its frames must match."""
+        self._photo.configure(width=width, height=height)
+        self.size = (width, height)
+
     def hint(self, text: str, colour: str = theme.MUTED) -> None:
         self._colour = colour
         self.configure(text=text, fg="#ffffff" if self._inverted else colour)
