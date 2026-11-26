@@ -177,7 +177,7 @@ def _admin_change(event: str, message: str) -> Record | None:
 
 
 def classify(event: str, message: str, level: str = "INFO",
-             answer_seconds: float = 120.0) -> Record | None:
+             answer_seconds: float = 30.0) -> Record | None:
     """The record for one event-log line, or None when it is not history."""
     if event == "lock.unlock":
         m = _UNLOCK.match(message)
@@ -409,7 +409,7 @@ class Recorder:
     # --------------------------------------------------------------- one event
     def _handle(self, ts: float, level: str, event: str, message: str) -> None:
         record = classify(event, message, level,
-                          self.config.getfloat("doorbell", "answer_seconds", 120.0))
+                          self.config.getfloat("doorbell", "answer_seconds", 30.0))
         if record is None:
             return
         photo = self._picture(record.photo, ts) if record.photo else ""

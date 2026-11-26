@@ -44,7 +44,7 @@ class Doorbell:
         self._deadline = 0.0
         self._timer: threading.Timer | None = None
         self.enabled = config.getbool("doorbell", "enabled", True)
-        self.answer_seconds = max(10.0, config.getfloat("doorbell", "answer_seconds", 120.0))
+        self.answer_seconds = max(10.0, config.getfloat("doorbell", "answer_seconds", 30.0))
         self.min_gap = max(0.0, config.getfloat("doorbell", "min_gap_seconds", 20.0))
 
     def add_listener(self, callback) -> None:
