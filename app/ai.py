@@ -8,6 +8,10 @@ photo, guest code, events, summary, doorbell answer), the router carries it
 out with its usual checks, and the model words the answer in the owner's own
 language and dialect.
 
+Like every WhatsApp text, the answer comes in Arabic and in English: the model
+writes the Arabic, a line with only ``<EN>``, then the same in English, and
+the bot sends the languages of ``[bot] languages``.
+
 Sent to OpenAI with such a message: the message, the last few lines of this
 conversation (kept in memory only, ``[ai] memory_minutes``) and the door's
 state -- lock, alarms, doorbell, camera and the latest events with names.
@@ -26,9 +30,11 @@ import requests
 
 from . import history as H
 from .config import env_value
-from .wording import describe, mask_number
+from .wording import Texts, describe, has_arabic, mask_number
 
 IGNORE = "<IGNORE>"
+EN_MARK = "<EN>"           # the line between the Arabic and the English answer
+_EN_MARK = re.compile(re.escape(EN_MARK), re.IGNORECASE)
 _CODE = re.compile(r"(?<!\d)\d{4,8}(?!\d)")
 _ERROR_EVERY = 600.0       # self chat: one "AI is down" reply per 10 minutes
 
@@ -73,7 +79,7 @@ TOOLS = [
 
 PROMPT = """\
 You are the WhatsApp assistant of the smart door lock at the owner's home. You only ever talk with the owner.
-Reply in the language and dialect of the owner's last message (usually Gulf Arabic), short like a WhatsApp chat: 1 to 4 lines, no headings or markdown, emojis welcome.
+Write every reply in two languages: first in Arabic (in the owner's Gulf dialect when they write in dialect), then a line containing only {mark}, then the same reply in English. Each part is short like a WhatsApp chat: 1 to 4 lines, no headings or markdown, emojis welcome. Earlier replies in this conversation are shown in one language only; still write both parts every time.
 You act only through the tools. Never say something happened unless a tool result says so; if a tool reports a fault or refusal, say it plainly.
 Door safety:
 - open_door only when the latest message clearly asks to open the door now. Not for questions ("is it open?"), negations ("don't open"), conditions ("if Ahmed comes, open"), later times ("open at five"), or quoted words. When unsure, ask a short yes/no question and wait.
@@ -234,7 +240,7 @@ class Assistant:
             raise ApiError(res)
         return res.json()
 
-    def _error_reply(self, exc: Exception, ar: bool) -> str:
+    def _error_reply(self, exc: Exception) -> Texts:
         if isinstance(exc, ApiError):
             reason = {
                 "invalid_api_key": ("مفتاح OpenAI غير صحيح (OPENAI_API_KEY في .env)",
@@ -246,19 +252,20 @@ class Assistant:
             }.get(exc.kind, (f"OpenAI رفض الطلب ({exc.status})", f"OpenAI refused ({exc.status})"))
         else:
             reason = ("ما قدرت أوصل لـ OpenAI الحين", "could not reach OpenAI right now")
-        return self.router._t(
-            ar, f"⚠️ {reason[0]}.\nالأوامر الأساسية شغّالة بدونه: اكتب «مساعدة».",
-            f"⚠️ {reason[1]}.\nThe basic commands still work: send \"help\".")
+        return Texts(f"⚠️ {reason[0]}.\nالأوامر الأساسية شغّالة بدونه: اكتب «مساعدة».",
+                     f"⚠️ {reason[1]}.\nThe basic commands still work: send \"help\".")
 
     # ---------------------------------------------------------------- entry
     def answer(self, text: str, sender: str, ar: bool, self_chat: bool, fallback: dict) -> dict:
         """The model's answer to a message the keywords did not understand."""
         router, events = self.router, self.ctx.events
-        system = PROMPT.format(notes=NOTES if self_chat else "", state=self._state())
+        system = PROMPT.format(notes=NOTES if self_chat else "", state=self._state(),
+                               mark=EN_MARK)
         messages = [{"role": "system", "content": system}, *self._history(sender),
                     {"role": "user", "content": text}]
         done: list[str] = []
         photo = ""
+        last_texts: Texts | None = None   # the latest tool result, in the router's words
         last_reply = ""
         reply = ""
         tokens = 0
@@ -283,6 +290,9 @@ class Assistant:
                     done.append(name)
                     photo = result.get("photo") or photo
                     last_reply = result.get("reply") or last_reply
+                    texts = result.get("texts")
+                    if texts:
+                        last_texts = Texts(texts.get("ar", ""), texts.get("en", ""))
                     content = result.get("reply") or ""
                     if result.get("photo"):
                         content += "\n(The picture is attached to your reply.)"
@@ -291,22 +301,44 @@ class Assistant:
             detail = exc.detail if isinstance(exc, ApiError) else type(exc).__name__
             events.warning("ai.error", f"{self.model}: {detail}")
             if done:     # something already happened: say what, even without the model
-                return router._result("ai:" + ",".join(done), last_reply, photo=_name(photo))
+                return router._result("ai:" + ",".join(done), last_texts or last_reply,
+                                      photo=_name(photo), ar=ar)
             if self_chat and time.time() - self._last_error < _ERROR_EVERY:
                 return fallback
             self._last_error = time.time()
-            return router._result("ai_error", self._error_reply(exc, ar))
+            return router._result("ai_error", self._error_reply(exc), ar=ar)
 
         intent = "ai:" + ",".join(done) if done else "ai"
-        if reply.strip() == IGNORE or (not reply and not done):
+        answer = _bilingual(reply)
+        if answer is None:          # <IGNORE>, or no words at all
             if not done:
                 return router._result("ai_ignore", "", handled=False)
-            reply = ""
-        reply = reply.replace(IGNORE, "").strip() or last_reply
+            answer = last_texts or last_reply
         events.info("ai.answer", f"{intent} for {mask_number(sender)} ({tokens} tokens)")
-        result = router._result(intent, reply, photo=_name(photo))
-        self.remember(sender, text, reply, intent)
+        result = router._result(intent, answer, photo=_name(photo), ar=ar)
+        self.remember(sender, text, result["reply"], intent)   # one language is enough
         return result
+
+
+def _bilingual(reply: str) -> Texts | None:
+    """The model's answer -- Arabic, a line with only <EN>, English -- as
+    :class:`Texts`; None for <IGNORE> (as either part) or no words at all.
+
+    Read tolerantly: without the marker the answer is one text, Arabic or
+    English by its letters; with one part empty, the other part alone.
+    """
+    parts = [_EN_MARK.sub("", part).strip() for part in _EN_MARK.split(reply, maxsplit=1)]
+    if IGNORE in parts:
+        return None
+    parts = [part for part in (p.replace(IGNORE, "").strip() for p in parts) if part]
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return Texts(parts[0], "") if has_arabic(parts[0]) else Texts("", parts[0])
+    arabic, english = parts
+    if has_arabic(english) and not has_arabic(arabic):   # written the other way round
+        arabic, english = english, arabic
+    return Texts(arabic, english)
 
 
 def _name(route: str | None) -> str:

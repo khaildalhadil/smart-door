@@ -27,6 +27,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from .config import Config
+from .wording import Texts, clock_line
 
 KINDS = ("fire", "smoke")
 POLL_SECONDS = 0.1
@@ -43,7 +44,8 @@ STATE_SUSPECT = "suspect"  # active ever since start: wiring / polarity?
 
 LABELS = {"fire": "Fire", "smoke": "Smoke"}
 
-# WhatsApp texts (Arabic, the owner's language).  {time} is HH:MM.
+# WhatsApp texts in Arabic, with their English twins below; alert_text()
+# puts them together (whatsapp/bot.js sends the [bot] languages).
 MESSAGES = {
     ("fire", "detected"): "🔥 تنبيه حريق! حساس النار اكتشف لهب عند الباب.",
     ("fire", "cleared"): "✅ انتهى تنبيه الحريق: حساس النار لم يعد يرى لهب.",
@@ -57,16 +59,35 @@ MESSAGES = {
 DOOR_OPENED = "🚪 تم فتح الباب تلقائيًا."
 DOOR_NOT_OPENED = "🚪 لم يُفتح الباب (عطل في الريلاي)."
 
+MESSAGES_EN = {
+    ("fire", "detected"): "🔥 Fire alert! The flame sensor detected a flame at the door.",
+    ("fire", "cleared"): "✅ Fire alert over: the flame sensor no longer sees a flame.",
+    ("fire", "suspect"): ("⚠️ The flame sensor has been reporting \"fire\" nonstop since the "
+                          "system started. The wiring or the settings are probably wrong, so "
+                          "the door was not opened. Check the sensor."),
+    ("smoke", "detected"): "💨 Smoke alert! The smoke sensor detected smoke or gas.",
+    ("smoke", "cleared"): "✅ Smoke alert over: the sensor is back to normal.",
+    ("smoke", "suspect"): ("⚠️ The smoke sensor has been reporting \"smoke\" nonstop since the "
+                           "system started. The wiring or the settings are probably wrong, so "
+                           "the door was not opened. Check the sensor."),
+}
+DOOR_OPENED_EN = "🚪 The door was opened automatically."
+DOOR_NOT_OPENED_EN = "🚪 The door did not open (relay fault)."
 
-def alert_text(kind: str, event: str, door: str | None = None) -> str:
-    """``door``: "opened", "failed" or None (say nothing about the door)."""
-    lines = [MESSAGES[(kind, event)]]
+
+def alert_text(kind: str, event: str, door: str | None = None) -> Texts:
+    """The alert in Arabic and English, with the time as its last line.
+
+    ``door``: "opened", "failed" or None (say nothing about the door).
+    """
+    lines = [Texts(MESSAGES[(kind, event)], MESSAGES_EN[(kind, event)])]
     if door == "opened":
-        lines.append(DOOR_OPENED)
+        lines.append(Texts(DOOR_OPENED, DOOR_OPENED_EN))
     elif door == "failed":
-        lines.append(DOOR_NOT_OPENED)
-    lines.append("الساعة " + time.strftime("%H:%M"))
-    return "\n".join(lines)
+        lines.append(Texts(DOOR_NOT_OPENED, DOOR_NOT_OPENED_EN))
+    now = time.time()   # one clock reading for both languages
+    lines.append(Texts(clock_line(now), clock_line(now, ar=False)))
+    return Texts.join(lines)
 
 
 # -------------------------------------------------------------------- pin input

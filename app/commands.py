@@ -4,12 +4,19 @@ The bot forwards every incoming message here first:
 
     POST /command {"text": "افتح الباب", "from": "9689xxxxxxx"}
       -> {"ok": true, "handled": true, "intent": "open",
-          "reply": "🚪 تم فتح الباب ...", "photo": null}
+          "reply": "🚪 تم فتح الباب ...", "photo": null,
+          "texts": {"ar": "🚪 تم فتح الباب ...", "en": "🚪 Door opened ..."}}
 
-``handled`` true: the bot sends ``reply`` (and ``photo``, if there is one) and
+Every reply is written in Arabic and in English in one go (``texts``, from a
+:class:`app.wording.Texts`), so the action behind it runs once whatever the
+bot sends: whatsapp/bot.js sends the languages of ``[bot] languages``.
+``reply`` is the one in the language of the message (Arabic, unless it was
+written in English), for bots that send a single text.
+
+``handled`` true: the bot sends the reply (and ``photo``, if there is one) and
 is done.  ``handled`` false: the text is not a door command.  The bot may then
 pass it to its language model, if it has one with credit left; if not, it
-sends ``reply``, which says how to get the list of commands.
+sends the reply, which says how to get the list of commands.
 
 Matching is strict on purpose.  A message is a command only when *every* word
 in it is known: the verb, the door, and filler such as "please".  "Open the
@@ -30,8 +37,8 @@ import unicodedata
 
 from . import doorbell as bell
 from . import history as H
-from .wording import (METHOD_AR, METHOD_EN, ar_duration, clock, describe, en_duration,
-                      mask_number)
+from .wording import (METHOD_AR, METHOD_EN, Texts, ar_duration, clock, describe,
+                      en_duration, has_arabic, mask_number)
 
 # ---------------------------------------------------------------- normalising
 _MARKS = re.compile("[ؐ-ًؚ-ٰٟۖ-ۭـ"
@@ -235,10 +242,6 @@ def _digits(text: str) -> str:
     return "".join(str(unicodedata.decimal(ch)) for ch in text if ch.isdecimal())
 
 
-def _has_arabic(text: str) -> bool:
-    return any("؀" <= ch <= "ۿ" for ch in text)
-
-
 # ---------------------------------------------------------------------- router
 class CommandRouter:
     """``ctx`` is the app's :class:`app.ui.app.Context`."""
@@ -254,14 +257,14 @@ class CommandRouter:
         ``self_chat``: it came from the owner's "message yourself" chat, which
         also holds their own notes."""
         raw = (text or "").strip()
-        ar = _has_arabic(raw) or not any(ch.isalpha() for ch in raw)
+        ar = has_arabic(raw) or not any(ch.isalpha() for ch in raw)
         events = self.ctx.events
         if not self._authorized(sender):
             shown = "".join(ch if ch.isprintable() else " " for ch in raw[:60])
             events.warning("bot.deny", f"{mask_number(sender)}: {shown}")
-            return self._result("denied", self._t(
-                ar, "🚫 هذا الرقم غير مصرّح له بالتحكم بالباب.",
-                "🚫 This number is not allowed to control the door."))
+            return self._result("denied", Texts(
+                "🚫 هذا الرقم غير مصرّح له بالتحكم بالباب.",
+                "🚫 This number is not allowed to control the door."), ar=ar)
         toks = tokens(raw)
         doorbell = getattr(self.ctx, "doorbell", None)
         pending = doorbell is not None and doorbell.pending() > 0
@@ -330,12 +333,22 @@ class CommandRouter:
     # ---------------------------------------------------------------- helpers
     @staticmethod
     def _t(ar: bool, arabic: str, english: str) -> str:
+        """One language only.  Replies are :class:`Texts`, both languages."""
         return arabic if ar else english
 
     @staticmethod
-    def _result(intent: str, reply: str, handled: bool = True, photo: str = "") -> dict:
-        return {"handled": handled, "intent": intent, "reply": reply,
-                "photo": f"/photos/{photo}" if photo else None}
+    def _result(intent: str, reply: Texts | str, handled: bool = True, photo: str = "",
+                ar: bool = True) -> dict:
+        """The answer as the API returns it.  ``reply`` in both languages goes
+        out as ``texts``, and ``ar`` picks the one for ``reply``; a plain
+        string is the reply as it is (no ``texts``)."""
+        texts = reply if isinstance(reply, Texts) else None
+        result = {"handled": handled, "intent": intent,
+                  "reply": texts.pick(ar) if texts is not None else reply,
+                  "photo": f"/photos/{photo}" if photo else None}
+        if texts is not None:
+            result["texts"] = texts.as_dict()
+        return result
 
     def _alarms(self) -> list[str]:
         hazards = getattr(self.ctx, "hazards", None)
@@ -345,49 +358,49 @@ class CommandRouter:
     def _do_open(self, _toks, ar: bool, _sender: str) -> dict:
         lock, cfg = self.ctx.lock, self.ctx.config
         if lock.backend.simulated:
-            return self._result("open", self._t(
-                ar, "⚠️ القفل في وضع المحاكاة (الريلاي غير متصل): الباب ما ينفتح فعليًا.",
-                "⚠️ The lock is in simulation mode (no relay): the door cannot open."))
+            return self._result("open", Texts(
+                "⚠️ القفل في وضع المحاكاة (الريلاي غير متصل): الباب ما ينفتح فعليًا.",
+                "⚠️ The lock is in simulation mode (no relay): the door cannot open."), ar=ar)
         if not lock.unlock(reason="whatsapp"):
-            return self._result("open", self._t(
-                ar, "⚠️ عطل في الريلاي: الباب ما انفتح. راجع سجل الأحداث على اللوحة.",
-                "⚠️ Relay fault: the door did not open. See the event log on the panel."))
+            return self._result("open", Texts(
+                "⚠️ عطل في الريلاي: الباب ما انفتح. راجع سجل الأحداث على اللوحة.",
+                "⚠️ Relay fault: the door did not open. See the event log on the panel."), ar=ar)
         seconds = cfg.unlock_seconds
-        return self._result("open", self._t(
-            ar, f"🚪 تم فتح الباب، ويقفل تلقائيًا بعد {ar_duration(seconds)}.",
-            f"🚪 Door opened. It locks again in {en_duration(seconds)}."))
+        return self._result("open", Texts(
+            f"🚪 تم فتح الباب، ويقفل تلقائيًا بعد {ar_duration(seconds)}.",
+            f"🚪 Door opened. It locks again in {en_duration(seconds)}."), ar=ar)
 
     def _do_lock(self, _toks, ar: bool, _sender: str) -> dict:
         lock = self.ctx.lock
         was_open = lock.status().is_unlocked
         lock.lock(reason="whatsapp")
-        reply = (self._t(ar, "🔒 تم قفل الباب.", "🔒 Door locked.") if was_open else
-                 self._t(ar, "🔒 الباب مقفل أصلًا.", "🔒 The door is already locked."))
+        lines = [Texts("🔒 تم قفل الباب.", "🔒 Door locked.") if was_open else
+                 Texts("🔒 الباب مقفل أصلًا.", "🔒 The door is already locked.")]
         if self._alarms():
-            reply += self._t(
-                ar, "\n⚠️ إنذار شغّال الآن: النظام يعيد فتح الباب تلقائيًا للسلامة.",
-                "\n⚠️ An alarm is active: the system re-opens the door for safety.")
-        return self._result("lock", reply)
+            lines.append(Texts(
+                "⚠️ إنذار شغّال الآن: النظام يعيد فتح الباب تلقائيًا للسلامة.",
+                "⚠️ An alarm is active: the system re-opens the door for safety."))
+        return self._result("lock", Texts.join(lines), ar=ar)
 
     def _do_keep_shut(self, _toks, ar: bool, _sender: str) -> dict:
         if self.ctx.lock.status().is_unlocked:
-            return self._result("keep_shut", self._t(
-                ar, "الباب مفتوح الآن ويقفل تلقائيًا بعد ثوانٍ. اكتب «اقفل الباب» لقفله فورًا.",
+            return self._result("keep_shut", Texts(
+                "الباب مفتوح الآن ويقفل تلقائيًا بعد ثوانٍ. اكتب «اقفل الباب» لقفله فورًا.",
                 "The door is open right now and relocks in a few seconds. "
-                "Send \"lock door\" to lock it at once."))
-        return self._result("keep_shut", self._t(
-            ar, "👌 تمام، الباب مقفل وما راح أفتحه.", "👌 OK, the door stays locked."))
+                "Send \"lock door\" to lock it at once."), ar=ar)
+        return self._result("keep_shut", Texts(
+            "👌 تمام، الباب مقفل وما راح أفتحه.", "👌 OK, the door stays locked."), ar=ar)
 
     # ---------------------------------------------------------------- doorbell
     def _do_bell_yes(self, toks, ar: bool, sender: str) -> dict:
         outcome = self.ctx.doorbell.answer(True, mask_number(sender) if sender else "")
         if outcome == bell.OPENED:
-            return self._result("bell_open", self._t(
-                ar, "🚪 تم فتح الباب للزائر.", "🚪 Door opened for the visitor."))
+            return self._result("bell_open", Texts(
+                "🚪 تم فتح الباب للزائر.", "🚪 Door opened for the visitor."), ar=ar)
         if outcome == bell.FAULT:
-            return self._result("bell_open", self._t(
-                ar, "⚠️ عطل في الريلاي: الباب ما انفتح للزائر.",
-                "⚠️ Relay fault: the door did not open for the visitor."))
+            return self._result("bell_open", Texts(
+                "⚠️ عطل في الريلاي: الباب ما انفتح للزائر.",
+                "⚠️ Relay fault: the door did not open for the visitor."), ar=ar)
         # The ring ran out between the check and the answer.
         return (self._do_open(toks, ar, sender) if _action(toks) == "open"
                 else self._do_no_bell(toks, ar, sender))
@@ -395,16 +408,16 @@ class CommandRouter:
     def _do_bell_no(self, toks, ar: bool, sender: str) -> dict:
         outcome = self.ctx.doorbell.answer(False, mask_number(sender) if sender else "")
         if outcome == bell.DECLINED:
-            return self._result("bell_deny", self._t(
-                ar, "👌 تمام، ما فتحت الباب. الزائر تبلّغ على الشاشة.",
-                "👌 OK, the door stays locked. The visitor was told on the screen."))
+            return self._result("bell_deny", Texts(
+                "👌 تمام، ما فتحت الباب. الزائر تبلّغ على الشاشة.",
+                "👌 OK, the door stays locked. The visitor was told on the screen."), ar=ar)
         return self._do_no_bell(toks, ar, sender)
 
     def _do_no_bell(self, _toks, ar: bool, _sender: str) -> dict:
-        return self._result("no_bell", self._t(
-            ar, "ما في جرس ينتظر الرد الآن.\nإذا تبي تفتح اكتب «افتح الباب».",
+        return self._result("no_bell", Texts(
+            "ما في جرس ينتظر الرد الآن.\nإذا تبي تفتح اكتب «افتح الباب».",
             "No doorbell is waiting for an answer.\nSend \"open door\" to open it."),
-            handled=False)
+            handled=False, ar=ar)
 
     # --------------------------------------------------------------- temp code
     def _do_tempcode(self, toks, ar: bool, _sender: str) -> dict:
@@ -431,10 +444,11 @@ class CommandRouter:
         if seconds is None and len(others) == 1 and len(others[0]) <= 4:
             seconds = int(others.pop()) * 60       # "رمز 4455 30": minutes
         if others:
-            return self._result("tempcode", self._t(
-                ar, "⚠️ الرمز المؤقت لازم يكون من 4 إلى 8 أرقام.\n"
-                    "مثال: رمز 4455 لمدة 30 دقيقة",
-                "⚠️ A guest code must be 4 to 8 digits.\nExample: code 4455 for 30 minutes"))
+            return self._result("tempcode", Texts(
+                "⚠️ الرمز المؤقت لازم يكون من 4 إلى 8 أرقام.\n"
+                "مثال: رمز 4455 لمدة 30 دقيقة",
+                "⚠️ A guest code must be 4 to 8 digits.\nExample: code 4455 for 30 minutes"),
+                ar=ar)
         return self._issue_tempcode(code, seconds, ar)
 
     def _issue_tempcode(self, code: str | None, seconds: float | None, ar: bool) -> dict:
@@ -453,21 +467,21 @@ class CommandRouter:
         except ValueError as exc:
             limit = cfg.getint("api", "max_temp_codes", 20)
             if "too many" in str(exc):
-                return self._result("tempcode", self._t(
-                    ar, f"⚠️ فيه {limit} رمزًا مؤقتًا فعّالًا، وهذا الحد الأقصى. "
-                        "انتظر لين ينتهي واحد منها.",
+                return self._result("tempcode", Texts(
+                    f"⚠️ فيه {limit} رمزًا مؤقتًا فعّالًا، وهذا الحد الأقصى. "
+                    "انتظر لين ينتهي واحد منها.",
                     f"⚠️ {limit} guest codes are already active, which is the limit. "
-                    "Wait for one to expire."))
-            return self._result("tempcode", self._t(
-                ar, "⚠️ ما قدرت أسوي الرمز المؤقت. الرمز من 4 إلى 8 أرقام.",
-                "⚠️ Could not create the guest code. A code is 4 to 8 digits."))
-        return self._result("tempcode", self._t(
-            ar, f"🔑 رمز مؤقت: {code}\n"
-                f"⏱ صالح لمدة {ar_duration(seconds)}، ويفتح مرة واحدة فقط.\n"
-                "يُكتب على لوحة الباب ثم #",
+                    "Wait for one to expire."), ar=ar)
+            return self._result("tempcode", Texts(
+                "⚠️ ما قدرت أسوي الرمز المؤقت. الرمز من 4 إلى 8 أرقام.",
+                "⚠️ Could not create the guest code. A code is 4 to 8 digits."), ar=ar)
+        return self._result("tempcode", Texts(
+            f"🔑 رمز مؤقت: {code}\n"
+            f"⏱ صالح لمدة {ar_duration(seconds)}، ويفتح مرة واحدة فقط.\n"
+            "يُكتب على لوحة الباب ثم #",
             f"🔑 Guest code: {code}\n"
             f"⏱ Valid for {en_duration(seconds)}, and opens the door once.\n"
-            "Type it on the door keypad, then #"))
+            "Type it on the door keypad, then #"), ar=ar)
 
     # ------------------------------------------------------------------- photo
     def _do_photo(self, _toks, ar: bool, _sender: str) -> dict:
@@ -475,15 +489,17 @@ class CommandRouter:
         jpeg = faces.snapshot_jpeg() if faces is not None else None
         name = history.save_photo(jpeg, "request") if jpeg else ""
         if not name and faces is not None and getattr(faces, "last_blank", False):
-            return self._result("photo", self._t(
-                ar, "📷 الكاميرا ما أعطت إلا صورة سوداء، فما أرسلتها.",
-                "📷 The camera gave only a black picture, so none was sent."))
+            return self._result("photo", Texts(
+                "📷 الكاميرا ما أعطت إلا صورة سوداء، فما أرسلتها.",
+                "📷 The camera gave only a black picture, so none was sent."), ar=ar)
         if not name:
-            return self._result("photo", self._t(
-                ar, "📷 الكاميرا غير متاحة الآن.", "📷 The camera is not available right now."))
-        return self._result("photo", self._t(
-            ar, f"📷 صورة من كاميرا الباب الآن ({clock()}).",
-            f"📷 Door camera, just now ({clock()})."), photo=name)
+            return self._result("photo", Texts(
+                "📷 الكاميرا غير متاحة الآن.", "📷 The camera is not available right now."),
+                ar=ar)
+        now = clock()   # one reading for both languages
+        return self._result("photo", Texts(
+            f"📷 صورة من كاميرا الباب الآن ({now}).",
+            f"📷 Door camera, just now ({now})."), photo=name, ar=ar)
 
     # ----------------------------------------------------------- log / summary
     def _do_log(self, toks, ar: bool, _sender: str) -> dict:
@@ -496,23 +512,22 @@ class CommandRouter:
             categories=(H.ENTRY, H.DENIED, H.DOORBELL, H.ALARM),
             since=H.start_of_day() if today else None)
         if not rows:
-            return self._result("log", self._t(
-                ar, "🧾 لا توجد أحداث مسجّلة" + (" اليوم." if today else " بعد."),
-                "🧾 No events recorded" + (" today." if today else " yet.")))
+            return self._result("log", Texts(
+                "🧾 لا توجد أحداث مسجّلة" + (" اليوم." if today else " بعد."),
+                "🧾 No events recorded" + (" today." if today else " yet.")), ar=ar)
         midnight = H.start_of_day()
-        lines = [self._t(ar, "🧾 أحداث اليوم:" if today else "🧾 آخر الأحداث:",
-                         "🧾 Today's events:" if today else "🧾 Latest events:")]
+        lines = [Texts("🧾 أحداث اليوم:" if today else "🧾 آخر الأحداث:",
+                       "🧾 Today's events:" if today else "🧾 Latest events:")]
         for row in rows:
             stamp = time.localtime(row["ts"])
             when = time.strftime("%H:%M" if row["ts"] >= midnight else "%d/%m %H:%M", stamp)
-            lines.append(f"{when}  {describe(row, ar)}")
-        return self._result("log", "\n".join(lines))
+            lines.append(Texts(f"{when}  {describe(row, True)}", f"{when}  {describe(row, False)}"))
+        return self._result("log", Texts.join(lines), ar=ar)
 
-    def _summary_lines(self, ar: bool) -> list[str]:
+    def _summary_lines(self) -> list[Texts]:
         data = self.ctx.history.summary(H.start_of_day())
-        names = METHOD_AR if ar else METHOD_EN
 
-        def split(counts: dict) -> str:
+        def split(counts: dict, names: dict) -> str:
             if not counts:
                 return ""
             parts = [f"{names.get(m, m or '?')} {n}"
@@ -521,72 +536,73 @@ class CommandRouter:
 
         entries, denied = data["entries"], data["denied"]
         lines = [
-            self._t(ar, f"🚪 الدخول: {sum(entries.values())}{split(entries)}",
-                    f"🚪 Entries: {sum(entries.values())}{split(entries)}"),
-            self._t(ar, f"⛔ المحاولات المرفوضة: {sum(denied.values())}{split(denied)}",
-                    f"⛔ Refused attempts: {sum(denied.values())}{split(denied)}"),
-            self._t(ar, f"🔔 الجرس: {data['rings']}", f"🔔 Doorbell rings: {data['rings']}"),
+            Texts(f"🚪 الدخول: {sum(entries.values())}{split(entries, METHOD_AR)}",
+                  f"🚪 Entries: {sum(entries.values())}{split(entries, METHOD_EN)}"),
+            Texts(f"⛔ المحاولات المرفوضة: {sum(denied.values())}{split(denied, METHOD_AR)}",
+                  f"⛔ Refused attempts: {sum(denied.values())}{split(denied, METHOD_EN)}"),
+            Texts(f"🔔 الجرس: {data['rings']}", f"🔔 Doorbell rings: {data['rings']}"),
         ]
         if data["alarms"]:
-            lines.append(self._t(ar, f"🔥 الإنذارات: {data['alarms']}",
-                                 f"🔥 Alarms: {data['alarms']}"))
+            lines.append(Texts(f"🔥 الإنذارات: {data['alarms']}",
+                               f"🔥 Alarms: {data['alarms']}"))
         last = data["last_entry"]
         if last:
             day = "%H:%M" if last["ts"] >= H.start_of_day() else "%d/%m %H:%M"
             when = time.strftime(day, time.localtime(last["ts"]))
-            how = names.get(last["method"], last["method"])
+            how = (METHOD_AR.get(last["method"], last["method"]),
+                   METHOD_EN.get(last["method"], last["method"]))
             who = f" ({last['person']})" if last["person"] else ""
-            lines.append(self._t(ar, f"🕒 آخر دخول: {when} — {how}{who}",
-                                 f"🕒 Last entry: {when} — {how}{who}"))
+            lines.append(Texts(f"🕒 آخر دخول: {when} — {how[0]}{who}",
+                               f"🕒 Last entry: {when} — {how[1]}{who}"))
         return lines
 
     def _do_summary(self, _toks, ar: bool, _sender: str) -> dict:
-        head = self._t(ar, "📊 ملخص اليوم:", "📊 Today so far:")
-        return self._result("summary", "\n".join([head] + self._summary_lines(ar)))
+        head = Texts("📊 ملخص اليوم:", "📊 Today so far:")
+        return self._result("summary", Texts.join([head] + self._summary_lines()), ar=ar)
 
     # ------------------------------------------------------------------ status
     def _do_status(self, _toks, ar: bool, _sender: str) -> dict:
         ctx = self.ctx
         status = ctx.lock.status()
-        lines = []
+        lines: list[Texts] = []
         if status.error:
-            lines.append(self._t(ar, "⚠️ عطل في ريلاي القفل", "⚠️ Lock relay fault"))
+            lines.append(Texts("⚠️ عطل في ريلاي القفل", "⚠️ Lock relay fault"))
         elif status.is_unlocked:
             left = max(1, round(status.seconds_remaining))
-            lines.append(self._t(ar, f"🔓 الباب مفتوح (يقفل بعد {left} ث)",
-                                 f"🔓 Door open (locks in {left} s)"))
+            lines.append(Texts(f"🔓 الباب مفتوح (يقفل بعد {left} ث)",
+                               f"🔓 Door open (locks in {left} s)"))
         else:
-            lines.append(self._t(ar, "🔒 الباب مقفل", "🔒 Door locked"))
+            lines.append(Texts("🔒 الباب مقفل", "🔒 Door locked"))
         if ctx.lock.backend.simulated:
-            lines.append(self._t(ar, "⚠️ القفل في وضع المحاكاة (بدون ريلاي)",
-                                 "⚠️ Lock in simulation mode (no relay)"))
+            lines.append(Texts("⚠️ القفل في وضع المحاكاة (بدون ريلاي)",
+                               "⚠️ Lock in simulation mode (no relay)"))
         for kind in self._alarms():
             what = {"fire": ("حريق", "Fire"), "smoke": ("دخان", "Smoke")}.get(kind, (kind, kind))
-            lines.append(self._t(ar, f"🔥 إنذار {what[0]} شغّال الآن!",
-                                 f"🔥 {what[1]} alarm active now!"))
+            lines.append(Texts(f"🔥 إنذار {what[0]} شغّال الآن!",
+                               f"🔥 {what[1]} alarm active now!"))
         doorbell = getattr(ctx, "doorbell", None)
         left = doorbell.pending() if doorbell is not None else 0
         if left > 0:
-            lines.append(self._t(ar, f"🔔 جرس ينتظر ردّك (باقي {round(left)} ث): «نعم» أو «لا»",
-                                 f"🔔 Doorbell waiting for you ({round(left)} s left): yes / no"))
+            lines.append(Texts(f"🔔 جرس ينتظر ردّك (باقي {round(left)} ث): «نعم» أو «لا»",
+                               f"🔔 Doorbell waiting for you ({round(left)} s left): yes / no"))
         faces = ctx.faces
         if faces is None or not faces.available:
             camera = ("غير مفعّلة", "not set up")
         else:
             camera = ("شغّالة", "online") if faces.camera_online else ("متوقفة ⚠️", "OFFLINE ⚠️")
-        lines.append(self._t(ar, f"📷 الكاميرا: {camera[0]}", f"📷 Camera: {camera[1]}"))
+        lines.append(Texts(f"📷 الكاميرا: {camera[0]}", f"📷 Camera: {camera[1]}"))
         fp = getattr(ctx, "fingerprints", None)
         if fp is not None and fp.available:
             finger = ("لا ترد ⚠️", "not responding ⚠️") if fp.online is False else ("شغّالة", "ready")
-            lines.append(self._t(ar, f"👆 البصمة: {finger[0]}", f"👆 Fingerprint: {finger[1]}"))
+            lines.append(Texts(f"👆 البصمة: {finger[0]}", f"👆 Fingerprint: {finger[1]}"))
         cards = getattr(ctx, "cards", None)
         if cards is not None and cards.available:
             reader = ("لا يرد ⚠️", "not responding ⚠️") if cards.online is False else ("شغّال", "ready")
-            lines.append(self._t(ar, f"💳 قارئ الكروت: {reader[0]}", f"💳 Card reader: {reader[1]}"))
+            lines.append(Texts(f"💳 قارئ الكروت: {reader[0]}", f"💳 Card reader: {reader[1]}"))
         active = ctx.temp_codes.active_count()
         if active:
-            lines.append(self._t(ar, f"🔑 رموز مؤقتة فعّالة: {active}",
-                                 f"🔑 Active guest codes: {active}"))
+            lines.append(Texts(f"🔑 رموز مؤقتة فعّالة: {active}",
+                               f"🔑 Active guest codes: {active}"))
         cloud = getattr(ctx, "cloud", None)
         if cloud is not None:
             rows, photos = ctx.history.backlog()
@@ -600,15 +616,14 @@ class CommandRouter:
             else:
                 text = (f"غير متصلة ⚠️ ({rows} سجل بانتظار الرفع)",
                         f"offline ⚠️ ({rows} row(s) waiting)")
-            lines.append(self._t(ar, f"☁️ قاعدة البيانات: {text[0]}", f"☁️ Database: {text[1]}"))
-        lines.append(self._t(ar, "— اليوم —", "— Today —"))
-        lines += self._summary_lines(ar)
-        return self._result("status", "\n".join(lines))
+            lines.append(Texts(f"☁️ قاعدة البيانات: {text[0]}", f"☁️ Database: {text[1]}"))
+        lines.append(Texts("— اليوم —", "— Today —"))
+        lines += self._summary_lines()
+        return self._result("status", Texts.join(lines), ar=ar)
 
     # -------------------------------------------------------------------- help
     def _do_help(self, _toks, ar: bool, _sender: str) -> dict:
-        return self._result("help", self._t(
-            ar,
+        return self._result("help", Texts(
             "🤖 أوامر الباب:\n"
             "🚪 افتح الباب\n"
             "🔒 اقفل الباب\n"
@@ -626,10 +641,10 @@ class CommandRouter:
             "📷 photo   (who is at the door?)\n"
             "🧾 log   (latest events)\n"
             "📊 summary\n"
-            "🔔 when the bell rings: answer yes or no"))
+            "🔔 when the bell rings: answer yes or no"), ar=ar)
 
     def _do_unknown(self, _toks, ar: bool, _sender: str) -> dict:
-        return self._result("unknown", self._t(
-            ar, "ما فهمت الطلب 🤔\nاكتب «مساعدة» لعرض أوامر الباب.",
+        return self._result("unknown", Texts(
+            "ما فهمت الطلب 🤔\nاكتب «مساعدة» لعرض أوامر الباب.",
             "I didn't get that 🤔\nSend \"help\" to see the door commands."),
-            handled=False)
+            handled=False, ar=ar)

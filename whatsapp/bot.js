@@ -21,6 +21,11 @@
 // session is in data/whatsapp-auth/ (mode 0700): whoever copies that folder is
 // logged in to this WhatsApp account, so it is never committed.
 //
+// Languages: the door writes every reply and alert in Arabic and in English
+// ("texts"); config.ini [bot] languages says which ones go out and in what
+// order, each as its own message ("ar en", the default: Arabic, then English).
+// A picture goes with the first one.
+//
 //   node bot.js            run (systemd: deploy/door-whatsapp.service)
 //   node bot.js --link     link in the foreground: prints the QR in the terminal
 //   node bot.js --pair 9689xxxxxxx   link with a pairing code instead of a QR
@@ -114,13 +119,27 @@ function envValue (name) {
   return value
 }
 
-// DOOR_API / DOOR_OWNERS in the environment override config.ini (bench tests).
+const LANGUAGES = ['ar', 'en']
+
+/** [bot] languages ("ar en", "en,ar", "en" ...) as a list: known words only,
+ *  each once, in the order given.  Nothing usable -> Arabic, then English. */
+function languagesOf (raw) {
+  const words = String(raw ?? '').toLowerCase().split(/[\s,;]+/).filter(w => LANGUAGES.includes(w))
+  return words.length ? [...new Set(words)] : [...LANGUAGES]
+}
+
+// DOOR_API / DOOR_OWNERS / DOOR_LANGUAGES in the environment override
+// config.ini (bench tests).
 function settings () {
   const ini = readIni(path.join(ROOT, 'config.ini'))
   const raw = process.env.DOOR_OWNERS ?? ini.bot?.owners ?? ''
   const owners = raw.split(/[,;]/).map(o => o.replace(/\D/g, '')).filter(o => o.length >= 6)
   const port = Number(ini.api?.port || 8000) || 8000
-  return { owners, door: process.env.DOOR_API || `http://127.0.0.1:${port}` }
+  return {
+    owners,
+    door: process.env.DOOR_API || `http://127.0.0.1:${port}`,
+    languages: languagesOf(process.env.DOOR_LANGUAGES ?? ini.bot?.languages)
+  }
 }
 
 const DOOR_KEY = envValue('DOOR_KEY')
@@ -181,6 +200,37 @@ function textOf (message) {
           m?.listResponseMessage?.title || m?.templateButtonReplyMessage?.selectedDisplayText || '').trim()
 }
 
+// ------------------------------------------------------------------ languages
+// The bot's own messages, in every language it can send.
+const STALE_COMMAND = {
+  ar: '⏱ وصلتني رسالتك متأخرة (الباب كان غير متصل)، فما نفذتها. أرسلها مرة ثانية.',
+  en: '⏱ Your message reached me late (the door was offline), so I did not carry it out. Send it again.'
+}
+const DOOR_SILENT = {
+  ar: '⚠️ برنامج الباب لا يرد الآن. جرّب بعد قليل.',
+  en: '⚠️ The door program is not answering right now. Try again in a moment.'
+}
+const LATE_ALERT = {
+  ar: '⏱ تنبيه متأخر (كان الواتساب غير متصل):\n',
+  en: '⏱ Late alert (WhatsApp was offline):\n'
+}
+
+/** ``texts`` ({ar, en}, from the door or the bot) in the [bot] languages, in
+ *  that order, as [language, text] pairs; a text equal to one already taken
+ *  goes once.  None of them (an alert queued before the door sent "texts"):
+ *  the old single field, ``single``, in its language ``singleLang``. */
+function inLanguages (texts, single = '', singleLang = '') {
+  const out = []
+  for (const lang of settings().languages) {
+    const text = texts?.[lang]
+    if (typeof text === 'string' && text.trim() && !out.some(([, t]) => t === text)) out.push([lang, text])
+  }
+  if (!out.length && typeof single === 'string' && single) out.push([singleLang, single])
+  return out
+}
+
+const textsIn = (...args) => inLanguages(...args).map(([, text]) => text)
+
 // ------------------------------------------------------------------ the bot
 let sock = null
 let connected = false
@@ -200,12 +250,15 @@ function me () {
   return { pn: userOf(user.id), lid: userOf(user.lid), jid: user.id ? jidNormalizedUser(user.id) : '' }
 }
 
-async function send (jid, text, photoRoute) {
-  const image = await photoBytes(photoRoute)
-  const sent = image
-    ? await sock.sendMessage(jid, { image, caption: text })
-    : await sock.sendMessage(jid, { text })
-  remember(sent)
+/** One reply or alert to one chat: its texts in order, each its own message;
+ *  the picture (``image``, already fetched) goes with the first as caption. */
+async function send (jid, texts, image = null) {
+  for (const [i, text] of texts.entries()) {
+    const sent = image && i === 0
+      ? await sock.sendMessage(jid, { image, caption: text })
+      : await sock.sendMessage(jid, { text })
+    remember(sent)
+  }
 }
 
 /** Phone number (digits) of whoever sent a direct message, or '' if unknown. */
@@ -250,9 +303,7 @@ async function onMessage (msg) {
     // Sent while the Pi or the internet was down: opening the door now, maybe
     // hours later, would surprise everyone.
     log(`skipped a command ${Math.round(age)} s old`)
-    if (age < TELL_STALE_SECONDS) {
-      await send(asker.jid, '⏱ وصلتني رسالتك متأخرة (الباب كان غير متصل)، فما نفذتها. أرسلها مرة ثانية.')
-    }
+    if (age < TELL_STALE_SECONDS) await send(asker.jid, textsIn(STALE_COMMAND))
     return
   }
   let result
@@ -261,13 +312,14 @@ async function onMessage (msg) {
     result = await (await door('POST', '/command', { text, from: asker.from, self: asker.selfChat }, 90000)).json()
   } catch (err) {
     log('command:', err.message)
-    await send(asker.jid, '⚠️ برنامج الباب لا يرد الآن. جرّب بعد قليل.')
+    await send(asker.jid, textsIn(DOOR_SILENT))
     return
   }
   log(`command from ${asker.selfChat ? 'self chat' : '…' + asker.from.slice(-4)}: ${result.intent}`)
   // Notes to yourself that are not door commands get no answer.
   if (!result.handled && asker.selfChat) return
-  if (result.reply) await send(asker.jid, result.reply, result.photo)
+  const texts = textsIn(result.texts, result.reply)
+  if (texts.length) await send(asker.jid, texts, await photoBytes(result.photo))
 }
 
 function alertTargets () {
@@ -287,19 +339,31 @@ const shortTime = iso => {
 }
 
 /** One message for a pile of alerts that waited while WhatsApp was down
- *  (up to 50 after a long outage): the first line of each kind, counted. */
-function summaryOf (late) {
+ *  (up to 50 after a long outage): the first line of each kind, counted.
+ *  ``lang`` "ar" or "en"; an alert without that text (queued before the door
+ *  sent "texts") is listed by its Arabic line. */
+function summaryOf (late, lang = 'ar') {
+  const en = lang === 'en'
   const counts = new Map()
   // "photo" = the picture that followed an alarm: the alarm itself is listed.
   const worth = late.some(a => a.event !== 'photo') ? late.filter(a => a.event !== 'photo') : late
   for (const alert of worth) {
-    const line = String(alert.message || '').split('\n')[0].trim()
+    const own = alert.texts?.[lang]
+    const text = typeof own === 'string' && own.trim() ? own : alert.message
+    const line = String(text || '').split('\n')[0].trim()
     if (line) counts.set(line, (counts.get(line) || 0) + 1)
   }
   const lines = [...counts].slice(0, SUMMARY_LINES).map(([line, n]) => `• ${line}${n > 1 ? ` (×${n})` : ''}`)
-  if (counts.size > SUMMARY_LINES) lines.push(`• … و${counts.size - SUMMARY_LINES} أنواع ثانية`)
+  const more = counts.size - SUMMARY_LINES
   const from = shortTime(late[0].time)
   const to = shortTime(late[late.length - 1].time)
+  if (en) {
+    if (more > 0) lines.push(`• … and ${more} other kind${more === 1 ? '' : 's'}`)
+    return `⏱ ${late.length} alert${late.length === 1 ? '' : 's'} came in while WhatsApp was offline` +
+      (from && to ? ` (from ${from} to ${to})` : '') + ':\n' + lines.join('\n') +
+      '\n\nThese are old, not happening now. New alerts reach you as they happen.'
+  }
+  if (more > 0) lines.push(`• … و${more} أنواع ثانية`)
   return `⏱ ${late.length} تنبيه صارت والواتساب غير متصل` + (from && to ? ` (من ${from} إلى ${to})` : '') +
     ':\n' + lines.join('\n') + '\n\nهذي قديمة، مو شي يصير الحين. التنبيهات الجديدة توصلك أول بأول.'
 }
@@ -314,17 +378,23 @@ async function pumpAlerts () {
     let late = 0
     while (late < alerts.length && alertAge(alerts[late]) > LATE_ALERT_SECONDS) late++
     if (late >= SUMMARY_FROM) {
-      const text = summaryOf(alerts.slice(0, late))
-      for (const jid of alertTargets()) await send(jid, text)
+      // One summary in each language.
+      const texts = settings().languages.map(lang => summaryOf(alerts.slice(0, late), lang))
+      for (const jid of alertTargets()) await send(jid, texts)
       await door('POST', '/alerts/ack', { id: alerts[late - 1].id })
       log(`${late} late alerts (#${alerts[0].id}–#${alerts[late - 1].id}) sent as one summary`)
       alerts = alerts.slice(late)
     }
     for (const alert of alerts) {
       // Queued while WhatsApp was not linked: say so, a ring from hours ago is
-      // not someone at the door now.
-      const text = alertAge(alert) > LATE_ALERT_SECONDS ? '⏱ تنبيه متأخر (كان الواتساب غير متصل):\n' + alert.message : alert.message
-      for (const jid of alertTargets()) await send(jid, text, alert.photo)
+      // not someone at the door now (in the language of each message).
+      const old = alertAge(alert) > LATE_ALERT_SECONDS
+      const texts = inLanguages(alert.texts, alert.message, 'ar')
+        .map(([lang, text]) => old ? LATE_ALERT[lang] + text : text)
+      // Fetched once, whatever the number of messages and chats.
+      const image = texts.length ? await photoBytes(alert.photo) : null
+      for (const jid of alertTargets()) await send(jid, texts, image)
+      // Acknowledged only once every message went out (at least once).
       await door('POST', '/alerts/ack', { id: alert.id })
       log(`alert #${alert.id} ${alert.type} ${alert.event} sent`)
     }
@@ -481,7 +551,11 @@ export const testing = {
   useSocket (fake) { sock = fake; connected = true },
   onMessage,
   pumpAlerts,
-  sentIds
+  sentIds,
+  settings,
+  languagesOf,
+  inLanguages,
+  summaryOf
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

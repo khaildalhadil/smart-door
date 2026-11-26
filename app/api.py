@@ -4,6 +4,7 @@
     POST /command   {"text": "افتح الباب", "from": "9689..."}
                                                       -> {"ok": true, "handled": true,
                                                           "intent": "open", "reply": "...",
+                                                          "texts": {"ar": "...", "en": "..."},
                                                           "photo": null}
     GET  /alerts                                      -> {"ok": true, "alerts": [...]}
     POST /alerts/ack {"id": 7}                        -> {"ok": true, "removed": 2}
@@ -20,8 +21,14 @@ Two loops make up the bot's side, and neither needs an AI model:
 * every incoming WhatsApp message goes to ``/command`` (app/commands.py),
   which understands the door commands by keyword and returns the reply;
 * the bot polls ``/alerts`` (fire, smoke, wrong code, doorbell: see
-  app/alerts.py), sends each one's ``message`` -- with the picture when there
-  is a ``photo`` -- then acknowledges the highest id it sent.
+  app/alerts.py), sends each one's text -- with the picture when there is a
+  ``photo`` -- then acknowledges the highest id it sent.
+
+Replies and alerts come in Arabic and English: ``texts`` holds both, and the
+bot sends the languages of ``[bot] languages``, each as its own message (the
+picture goes with the first).  The older single fields stay for one-language
+bots: an alert's ``message`` is Arabic, a reply's ``reply`` is in the language
+the owner wrote in.
 
 ``/status`` and ``/events`` are there for a bot that *does* have a model and
 wants facts to answer a free-form question with.
@@ -53,6 +60,7 @@ from werkzeug.serving import WSGIRequestHandler, make_server
 
 from .config import ENV_PATH, env_value
 from .history import CATEGORIES, public_row, start_of_day
+from .wording import Texts
 
 HOST = "127.0.0.1"  # never 0.0.0.0: the tunnel is the only way in
 MIN_KEY_LENGTH = 32
@@ -152,7 +160,8 @@ def create_app(ctx, door_key: str) -> Flask:
 
     @app.post("/command")
     def command():
-        """One WhatsApp message in, the answer out (app/commands.py)."""
+        """One WhatsApp message in, the answer out in both languages
+        (app/commands.py)."""
         body = request.get_json(force=True, silent=True)
         text = body.get("text") if isinstance(body, dict) else None
         if not isinstance(text, str):
@@ -236,9 +245,11 @@ def create_app(ctx, door_key: str) -> Flask:
 
     @app.post("/alerts/test")
     def alerts_test():
-        """Queue a harmless test alert, to check the bot end to end."""
-        alert_id = ctx.alerts.add("test", "test",
-                                  "🧪 رسالة تجربة من القفل الذكي: التنبيهات تصل للواتساب.")
+        """Queue a harmless test alert, in both languages, to check the bot end
+        to end."""
+        alert_id = ctx.alerts.add("test", "test", Texts(
+            "🧪 رسالة تجربة من القفل الذكي: التنبيهات تصل للواتساب.",
+            "🧪 Test message from the smart lock: alerts reach WhatsApp."))
         return jsonify(ok=True, id=alert_id)
 
     @app.errorhandler(HTTPException)

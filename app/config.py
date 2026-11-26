@@ -236,6 +236,10 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # separated, digits only, e.g. 96891234567.  Empty = whoever the bot
         # forwards (the bot then decides who may talk to it).
         "owners": "",
+        # Every WhatsApp message goes out in these languages, in this order,
+        # each as its own message (whatsapp/bot.js): "ar en" = Arabic, then
+        # the same in English; "ar" or "en" alone = that language only.
+        "languages": "ar en",
         # "temp code" with no duration / no digits given.
         "temp_code_minutes": "10",
         "temp_code_digits": "6",

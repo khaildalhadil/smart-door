@@ -12,11 +12,18 @@ the bot or the tunnel is down is delivered when they come back (at least once:
 the bot may see an alert twice if it dies between sending and acknowledging).
 The queue lives in ``data/alerts.json`` (mode 0600) and survives a restart.
 
-The bot sends ``message`` as it is: no AI is involved, so alerts cost no
-tokens.  Optional keys:
+Every alert is written in Arabic and in English, and the bot sends it as it
+is: no AI is involved, so alerts cost no tokens.
+
+* ``message``: the Arabic text, ready to send (what a one-language bot sends);
+* ``texts``: ``{"ar": "...", "en": "..."}``, the same alert in each language.
+  whatsapp/bot.js sends the languages of ``[bot] languages`` ("ar en"), in
+  that order, each as its own WhatsApp message.
+
+Optional keys:
 
 * ``photo``: ``"/photos/<name>.jpg"`` -- fetch it from this API (same key)
-  and send it as an image with ``message`` as the caption;
+  and send it as an image with the first text as the caption;
 * ``ask``: true when the owner is expected to answer (the doorbell); the
   answer goes to ``POST /command`` like any other message;
 * ``options``: the possible answers, for bots that can show reply buttons.
@@ -30,6 +37,7 @@ import threading
 import time
 
 from .config import Config
+from .wording import Texts
 
 MAX_PENDING = 50  # oldest ones are dropped past this
 
@@ -72,12 +80,15 @@ class AlertQueue:
                 self.events.error("alert.save", f"cannot write {self._path.name}: {exc}")
 
     # -------------------------------------------------------------------- API
-    def add(self, kind: str, event: str, message: str, door_opened: bool = False,
+    def add(self, kind: str, event: str, message: Texts | str, door_opened: bool = False,
             photo: str = "", ask: bool = False, options: list[dict] | None = None) -> int:
         """Queue one alert; returns its id.
 
-        ``photo`` is a file name in data/photos (see app/history.py).
+        ``message`` is the text in Arabic and English (:class:`app.wording.Texts`);
+        a plain string counts as the Arabic text alone.  ``photo`` is a file
+        name in data/photos (see app/history.py).
         """
+        text = message if isinstance(message, Texts) else Texts(message, "")
         with self._lock:
             alert_id = self._next_id
             self._next_id += 1
@@ -85,7 +96,8 @@ class AlertQueue:
                 "id": alert_id,
                 "type": kind,            # "fire", "smoke", "keypad", "doorbell", ...
                 "event": event,          # "detected", "cleared", "denied", "ring", ...
-                "message": message,      # ready to send as the WhatsApp text
+                "message": text.pick(True),  # Arabic, ready to send as the WhatsApp text
+                "texts": text.as_dict(),     # {"ar": ..., "en": ...}
                 "door_opened": bool(door_opened),
                 "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             }

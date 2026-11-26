@@ -8,6 +8,7 @@ The recorder subscribes to it, and for each event that matters:
    cloud sync then copies to Supabase for the dashboard;
 3. queues a WhatsApp alert for the bot when ``[notify]`` says so: wrong door
    code with the person's picture, the doorbell question, an unknown finger...
+   Each alert is written in Arabic and in English (app/wording.py).
 
 The work happens on its own thread: the screen that logged the event never
 waits for the camera or the disk.
@@ -26,7 +27,7 @@ from dataclasses import dataclass
 
 from . import history as H
 from .config import Config
-from .wording import ar_duration, clock_line
+from .wording import Texts, ar_duration, clock_line, en_duration
 
 PHOTO_REUSE = 2.0          # a picture this fresh is reused instead of a new one
 FAULT_GAP = 1800.0         # the same fault is reported at most this often
@@ -53,6 +54,7 @@ class Record:
     alert: str = ""           # alert type for the bot; "" = no WhatsApp alert
     alert_event: str = ""
     text: str = ""            # the alert, in Arabic, without the time line
+    text_en: str = ""         # the same alert in English
     setting: str = ""         # [notify] option that must be on; "" = always
     urgent: bool = False      # not held back by [notify] min_gap_seconds
     gap: float | None = None  # own minimum gap, in place of min_gap_seconds
@@ -64,50 +66,62 @@ def _unlock(reason: str) -> Record | None:
     if reason == "keypad":
         return Record(H.ENTRY, "keypad", photo="keypad", alert="entry",
                       alert_event="opened", setting="entries",
-                      text="🚪 انفتح الباب برمز الباب.")
+                      text="🚪 انفتح الباب برمز الباب.",
+                      text_en="🚪 The door was opened with the door code.")
     if reason == "temp code":
         return Record(H.ENTRY, "temp_code", photo="tempcode", alert="entry",
                       alert_event="guest", setting="temp_code_used",
-                      text="🔑 الضيف استخدم الرمز المؤقت ودخل.")
+                      text="🔑 الضيف استخدم الرمز المؤقت ودخل.",
+                      text_en="🔑 The guest came in with the guest code.")
     m = _FACE.match(reason)
     if m:
         return Record(H.ENTRY, "face", m.group(1), photo="face", alert="entry",
                       alert_event="opened", setting="entries",
-                      text=f"🚪 {m.group(1)} دخل (بالوجه).")
+                      text=f"🚪 {m.group(1)} دخل (بالوجه).",
+                      text_en=f"🚪 {m.group(1)} came in (face).")
     m = _FINGER.match(reason)
     if m:
         return Record(H.ENTRY, "fingerprint", m.group(1), photo="finger", alert="entry",
                       alert_event="opened", setting="entries",
-                      text=f"🚪 {m.group(1)} دخل (بالبصمة).")
+                      text=f"🚪 {m.group(1)} دخل (بالبصمة).",
+                      text_en=f"🚪 {m.group(1)} came in (fingerprint).")
     m = _CARD.match(reason)
     if m:
         return Record(H.ENTRY, "card", m.group(1), photo="card", alert="entry",
                       alert_event="opened", setting="entries",
-                      text=f"🚪 {m.group(1)} دخل (بالكرت).")
+                      text=f"🚪 {m.group(1)} دخل (بالكرت).",
+                      text_en=f"🚪 {m.group(1)} came in (card).")
     m = _MENU.match(reason)
     if m:
         return Record(H.ENTRY, "menu", m.group(1), photo="menu", alert="entry",
                       alert_event="opened", setting="entries",
-                      text=f"🚪 {m.group(1)} فتح الباب من لوحة التحكم.")
+                      text=f"🚪 {m.group(1)} فتح الباب من لوحة التحكم.",
+                      text_en=f"🚪 {m.group(1)} opened the door from the control panel.")
     if reason == "whatsapp doorbell":
         return Record(H.ENTRY, "doorbell", photo="bell_open", alert="entry",
                       alert_event="visitor", setting="entries",
-                      text="🚪 الزائر دخل بعد موافقتك على الجرس.")
+                      text="🚪 الزائر دخل بعد موافقتك على الجرس.",
+                      text_en="🚪 The visitor came in after you said yes to the doorbell.")
     if reason.startswith("whatsapp"):
         return Record(H.ENTRY, "whatsapp", photo="whatsapp", alert="entry",
                       alert_event="remote", setting="entries",
-                      text="🚪 انفتح الباب بأمر واتساب. هذي الصورة من عند الباب.")
+                      text="🚪 انفتح الباب بأمر واتساب. هذي الصورة من عند الباب.",
+                      text_en="🚪 The door was opened by a WhatsApp command. "
+                              "Here is a picture from the door.")
     m = _ALARM_OPEN.match(reason)
     if m:
         return Record(H.ALARM, m.group(1).split(" + ")[0])
     if reason == "self-test":
         return Record(H.SYSTEM, "test", photo="test", alert="admin", alert_event="relay_test",
                       setting="admin_changes",
-                      text="🔧 تجربة الريلاي من لوحة التحكم: الباب انفتح ثانية وحدة.")
+                      text="🔧 تجربة الريلاي من لوحة التحكم: الباب انفتح ثانية وحدة.",
+                      text_en="🔧 Relay test from the control panel: "
+                              "the door opened for one second.")
     if reason == "simulation button":
         return Record(H.SYSTEM, "test")
     return Record(H.ENTRY, "other", photo="entry", alert="entry", alert_event="opened",
-                  setting="entries", text="🚪 انفتح الباب.")
+                  setting="entries", text="🚪 انفتح الباب.",
+                  text_en="🚪 The door was opened.")
 
 
 def _who(message: str) -> str:
@@ -115,65 +129,99 @@ def _who(message: str) -> str:
     return message.split(" (")[0]
 
 
+def _whose(person: str, first: bool = False) -> str:
+    """English possessive: "Sara's"; without a name "a user's" ("A user's"
+    as the ``first`` word)."""
+    if person:
+        return f"{person}'s"
+    return "A user's" if first else "a user's"
+
+
+def _wait(message: str) -> tuple[str, str]:
+    """How long a lockout lasts ("... 30s" in the message): Arabic, English."""
+    m = _SECONDS.search(message)
+    if not m:
+        return "مؤقتًا", "for a while"
+    return ar_duration(int(m.group(1))), "for " + en_duration(int(m.group(1)))
+
+
 def _admin_change(event: str, message: str) -> Record | None:
     """A change made on the door panel: told to the owner with a picture of
     whoever stands at the panel ([notify] admin_changes)."""
-    text = None
+    text = text_en = None
     person = ""
     if event == "passcode.changed":
         text = "🔐 تم تغيير رمز الباب من لوحة التحكم."
+        text_en = "🔐 The door code was changed from the control panel."
     elif event == "user.add":
         person = _who(message)
         text = f"👤 مستخدم جديد أُضيف من لوحة الباب: {message}"
+        text_en = f"👤 New user added on the door panel: {message}"
     elif event == "user.delete":
         person = _who(message)
         text = f"🗑 مستخدم انحذف من لوحة الباب: {message}"
+        text_en = f"🗑 User deleted on the door panel: {message}"
     elif event == "user.enabled":
         m = re.match(r"^(.+) -> (enabled|disabled)$", message)
         person = m.group(1) if m else ""
         state = "تفعيل" if m and m.group(2) == "enabled" else "تعطيل"
         text = f"👤 تم {state} حساب {person or 'مستخدم'} من لوحة الباب."
+        state_en = "enabled" if m and m.group(2) == "enabled" else "disabled"
+        text_en = f"👤 {_whose(person, True)} account was {state_en} on the door panel."
     elif event == "user.pin":
         m = re.match(r"^PIN changed for (.+)$", message)
         person = m.group(1) if m else ""
         text = f"🔑 تغيّر PIN حساب {person or 'مستخدم'} على لوحة الباب."
+        text_en = f"🔑 {_whose(person, True)} PIN was changed on the door panel."
     elif event == "face.add":
         person = _who(message)
         text = f"🙂 وجه جديد يفتح الباب أُضيف لـ {person}."
+        text_en = f"🙂 New face added for {person}: it can now open the door."
     elif event == "face.delete":
         person = _who(message)
         text = f"🗑 انحذف وجه من حساب {person}."
+        text_en = f"🗑 A face was removed from {_whose(person)} account."
     elif event == "fingerprint.add":
         m = re.match(r"^slot \d+ -> (.+?) '", message)
         person = m.group(1) if m else ""
         text = f"👆 بصمة جديدة تفتح الباب أُضيفت لـ {person or 'مستخدم'}."
+        text_en = f"👆 New fingerprint added for {person or 'a user'}: it can now open the door."
     elif event == "fingerprint.delete":
         m = re.match(r"^slot \d+ \((.+)\)$", message)
         person = m.group(1) if m else ""
         text = f"🗑 انحذفت بصمة من حساب {person or 'مستخدم'}."
+        text_en = f"🗑 A fingerprint was removed from {_whose(person)} account."
     elif event == "fingerprint.clear":
         text = "🗑 انمسحت كل البصمات من حساس البصمة."
+        text_en = "🗑 All fingerprints were erased from the fingerprint sensor."
     elif event == "card.add":
         person = _who(message)
         text = f"💳 كرت جديد يفتح الباب أُضيف لـ {person}."
+        text_en = f"💳 New card added for {person}: it can now open the door."
     elif event == "card.delete":
         person = _who(message)
         text = f"🗑 انحذف كرت من حساب {person}."
+        text_en = f"🗑 A card was removed from {_whose(person)} account."
     elif event == "security.reset":
         m = re.match(r"^lockouts cleared by (.+)$", message)
         person = m.group(1) if m else ""
         text = f"🔓 {person or 'المدير'} مسح حظر المحاولات من لوحة الباب."
+        text_en = f"🔓 {person or 'The admin'} cleared the failed-attempt lockouts on the door panel."
     elif event == "app.exit":
         m = re.match(r"^closed by (.+)$", message)
         person = m.group(1) if m else ""
         return Record(H.ADMIN, person=person, photo="admin", alert="admin",
                       alert_event="exit", setting="admin_changes", urgent=True,
                       text=f"⛔ {person or 'المدير'} أغلق برنامج الباب من اللوحة.\n"
-                           "الأرقام والوجه والبصمة والكرت ما تفتح الباب لين يشتغل من جديد.")
+                           "الأرقام والوجه والبصمة والكرت ما تفتح الباب لين يشتغل من جديد.",
+                      text_en=f"⛔ {person or 'The admin'} closed the door program from the panel.\n"
+                              "The keypad, face, fingerprint and card won't open the door "
+                              "until it starts again.")
     if text is None:
         return None
     return Record(H.ADMIN, person=person, photo="admin", alert="admin",
-                  alert_event=event.replace(".", "_"), setting="admin_changes", text=text)
+                  alert_event=event.replace(".", "_"), setting="admin_changes", text=text,
+                  text_en=text_en)
 
 
 def classify(event: str, message: str, level: str = "INFO",
@@ -190,54 +238,69 @@ def classify(event: str, message: str, level: str = "INFO",
         if "new administrator" in message:
             return Record(H.DENIED, "keypad", photo="keypad_deny", alert="keypad",
                           alert_event="denied", setting="wrong_code",
-                          text="⚠️ أحدهم حاول إنشاء حساب مدير على لوحة الباب برمز خاطئ.")
+                          text="⚠️ أحدهم حاول إنشاء حساب مدير على لوحة الباب برمز خاطئ.",
+                          text_en="⚠️ Someone tried to create an admin account on the door "
+                                  "panel with a wrong code.")
         m = _LEFT.search(message)
         left = f"\nالمحاولات الباقية قبل قفل اللوحة: {m.group(1)}" if m else ""
+        left_en = f"\nAttempts left before the keypad locks: {m.group(1)}" if m else ""
         return Record(H.DENIED, "keypad", photo="keypad_deny", alert="keypad",
                       alert_event="denied", setting="wrong_code",
-                      text="⚠️ رمز خاطئ على لوحة الباب." + left)
+                      text="⚠️ رمز خاطئ على لوحة الباب." + left,
+                      text_en="⚠️ Wrong code on the door panel." + left_en)
     if event == "keypad.lockout":
-        m = _SECONDS.search(message)
-        wait = ar_duration(int(m.group(1))) if m else "مؤقتًا"
+        wait, wait_en = _wait(message)
         return Record(H.DENIED, "keypad", photo="keypad_lock", alert="keypad",
                       alert_event="lockout", setting="wrong_code", urgent=True,
-                      text=f"🚫 محاولات خاطئة متكررة لرمز الباب.\nلوحة الأرقام مقفلة {wait}.")
+                      text=f"🚫 محاولات خاطئة متكررة لرمز الباب.\nلوحة الأرقام مقفلة {wait}.",
+                      text_en=f"🚫 Repeated wrong door codes.\nThe keypad is locked {wait_en}.")
     if event == "fingerprint.deny":
         m = re.match(r"^(.+) is disabled", message)
         if m:
             return Record(H.DENIED, "fingerprint", m.group(1), photo="finger_deny",
                           alert="fingerprint", alert_event="denied",
-                          text=f"⚠️ {m.group(1)} حاول يفتح الباب ببصمته، وحسابه معطّل.")
+                          text=f"⚠️ {m.group(1)} حاول يفتح الباب ببصمته، وحسابه معطّل.",
+                          text_en=f"⚠️ {m.group(1)} tried to open the door with a fingerprint, "
+                                  "but the account is disabled.")
         return Record(H.DENIED, "fingerprint", photo="finger_deny", alert="fingerprint",
                       alert_event="denied", setting="unknown_fingerprint",
-                      text="⚠️ بصمة غير مسجّلة حاولت فتح الباب.")
+                      text="⚠️ بصمة غير مسجّلة حاولت فتح الباب.",
+                      text_en="⚠️ An unregistered fingerprint tried to open the door.")
     if event == "card.deny":
         m = re.match(r"^(.+) is disabled", message)
         if m:
             return Record(H.DENIED, "card", m.group(1), photo="card_deny", alert="card",
                           alert_event="denied",
-                          text=f"⚠️ {m.group(1)} حاول يفتح الباب بكرته، وحسابه معطّل.")
+                          text=f"⚠️ {m.group(1)} حاول يفتح الباب بكرته، وحسابه معطّل.",
+                          text_en=f"⚠️ {m.group(1)} tried to open the door with a card, "
+                                  "but the account is disabled.")
         m = _LEFT.search(message)
         left = f"\nالمحاولات الباقية قبل قفل قارئ الكروت: {m.group(1)}" if m else ""
+        left_en = f"\nAttempts left before the card reader locks: {m.group(1)}" if m else ""
         return Record(H.DENIED, "card", photo="card_deny", alert="card",
                       alert_event="denied", setting="unknown_card",
-                      text="⚠️ كرت غير مسجّل حاول يفتح الباب." + left)
+                      text="⚠️ كرت غير مسجّل حاول يفتح الباب." + left,
+                      text_en="⚠️ An unregistered card tried to open the door." + left_en)
     if event == "card.lockout":
-        m = _SECONDS.search(message)
-        wait = ar_duration(int(m.group(1))) if m else "مؤقتًا"
+        wait, wait_en = _wait(message)
         return Record(H.DENIED, "card", photo="card_lock", alert="card",
                       alert_event="lockout", setting="unknown_card", urgent=True,
-                      text=f"🚫 كروت غير مسجّلة تكررت على قارئ الباب.\nقارئ الكروت مقفل {wait}.")
+                      text=f"🚫 كروت غير مسجّلة تكررت على قارئ الباب.\nقارئ الكروت مقفل {wait}.",
+                      text_en=f"🚫 Repeated unregistered cards at the door reader.\n"
+                              f"The card reader is locked {wait_en}.")
     if event == "face.deny":
         m = re.match(r"^(.+) is disabled$", message)
         if m:
             return Record(H.DENIED, "face", m.group(1), photo="face_deny", alert="face",
                           alert_event="denied",
-                          text=f"⚠️ {m.group(1)} حاول يدخل بوجهه، وحسابه معطّل.")
+                          text=f"⚠️ {m.group(1)} حاول يدخل بوجهه، وحسابه معطّل.",
+                          text_en=f"⚠️ {m.group(1)} tried to come in with face recognition, "
+                                  "but the account is disabled.")
         if message.startswith("unknown face"):
             return Record(H.DENIED, "face", photo="face_deny", alert="face",
                           alert_event="unknown", setting="unknown_face",
-                          needs_photo=True, text="👤 شخص غير معروف واقف عند الباب.")
+                          needs_photo=True, text="👤 شخص غير معروف واقف عند الباب.",
+                          text_en="👤 An unknown person is standing at the door.")
         return Record(H.DENIED, "face")
     if event == "login.deny":
         m = re.match(r"^wrong PIN for (.+)$", message)
@@ -245,16 +308,20 @@ def classify(event: str, message: str, level: str = "INFO",
         return Record(H.DENIED, "login", who, photo="pin_deny", alert="login",
                       alert_event="denied", setting="wrong_pin",
                       text="⚠️ PIN خاطئ عند محاولة الدخول"
-                           + (f" بحساب {who}" if who else "") + " على لوحة الباب.")
+                           + (f" بحساب {who}" if who else "") + " على لوحة الباب.",
+                      text_en="⚠️ Wrong PIN while signing in"
+                              + (f" as {who}" if who else "") + " on the door panel.")
     if event == "login.lockout":
-        m = _SECONDS.search(message)
-        wait = ar_duration(int(m.group(1))) if m else "مؤقتًا"
+        wait, wait_en = _wait(message)
         return Record(H.DENIED, "login", photo="pin_lock", alert="login",
                       alert_event="lockout", setting="wrong_pin", urgent=True,
-                      text=f"🚫 محاولات PIN خاطئة متكررة.\nتسجيل الدخول على اللوحة مقفل {wait}.")
+                      text=f"🚫 محاولات PIN خاطئة متكررة.\nتسجيل الدخول على اللوحة مقفل {wait}.",
+                      text_en=f"🚫 Repeated wrong PINs.\nSigning in on the panel is locked {wait_en}.")
     if event == "bot.deny":
         return Record(H.DENIED, "whatsapp", alert="bot", alert_event="denied", gap=60.0,
-                      text="🚫 رقم غير مصرّح له حاول يرسل أمرًا للباب:\n" + message)
+                      text="🚫 رقم غير مصرّح له حاول يرسل أمرًا للباب:\n" + message,
+                      text_en="🚫 An unauthorized number tried to send the door a command:\n"
+                              + message)
 
     # -------------------------------------------------------------- doorbell
     if event == "doorbell.ring":
@@ -265,7 +332,11 @@ def classify(event: str, message: str, level: str = "INFO",
             text=("🔔 رنّ الجرس مرة ثانية، ما زال ينتظر عند الباب." if again
                   else "🔔 في أحد عند الباب!")
                  + "\nتفتح له؟ رد بـ «نعم» أو «لا»."
-                 + f"\n(الرد مقبول لمدة {ar_duration(answer_seconds)})")
+                 + f"\n(الرد مقبول لمدة {ar_duration(answer_seconds)})",
+            text_en=("🔔 The doorbell rang again: they are still waiting at the door." if again
+                     else "🔔 Someone is at the door!")
+                    + "\nLet them in? Reply \"yes\" or \"no\"."
+                    + f"\n(Reply within {en_duration(answer_seconds)})")
     if event in ("doorbell.answer", "doorbell.timeout"):
         return Record(H.DOORBELL, "doorbell")
 
@@ -276,7 +347,9 @@ def classify(event: str, message: str, level: str = "INFO",
             what = "الحريق" if kind == "fire" else "الدخان"
             return Record(H.ALARM, kind, photo=kind, alert=kind, alert_event="photo",
                           setting="alarm_photo", urgent=True, needs_photo=True,
-                          text=f"📷 صورة من كاميرا الباب لحظة إنذار {what}.")
+                          text=f"📷 صورة من كاميرا الباب لحظة إنذار {what}.",
+                          text_en=f"📷 Picture from the door camera when the {kind} "
+                                  "alarm went off.")
         if "alarm over" in message:
             return Record(H.ALARM, kind)
         return Record(H.SYSTEM, kind) if level != "INFO" else None
@@ -294,7 +367,8 @@ def classify(event: str, message: str, level: str = "INFO",
         who = message.split(" (")[0]
         return Record(H.ADMIN, "login", who, photo="admin", alert="admin",
                       alert_event="login", setting="panel_login",
-                      text=f"👤 {who} سجّل دخول على لوحة الباب.")
+                      text=f"👤 {who} سجّل دخول على لوحة الباب.",
+                      text_en=f"👤 {who} signed in on the door panel.")
     admin = _admin_change(event, message)
     if admin is not None:
         return admin
@@ -304,7 +378,8 @@ def classify(event: str, message: str, level: str = "INFO",
     # ----------------------------------------------------------------- system
     if event == "app.start":
         return Record(H.SYSTEM, alert="system", alert_event="start", setting="startup",
-                      text="🔌 نظام الباب اشتغل (تشغيل جديد أو بعد انقطاع الكهرباء).")
+                      text="🔌 نظام الباب اشتغل (تشغيل جديد أو بعد انقطاع الكهرباء).",
+                      text_en="🔌 The door system started (a restart, or after a power cut).")
     if event == "lock.shutdown":
         return Record(H.SYSTEM)
     if event == "face.camera":
@@ -312,23 +387,31 @@ def classify(event: str, message: str, level: str = "INFO",
             return Record(H.SYSTEM, "camera", alert="camera", alert_event="offline",
                           setting="faults", gap=FAULT_GAP,
                           text="📷 كاميرا الباب انفصلت أو تعطلت.\n"
-                               "التنبيهات القادمة بدون صور لين ترجع.")
+                               "التنبيهات القادمة بدون صور لين ترجع.",
+                          text_en="📷 The door camera was disconnected or stopped working.\n"
+                                  "Alerts come without pictures until it is back.")
         return Record(H.SYSTEM, "camera", alert="camera", alert_event="online",
-                      setting="faults", text="✅ كاميرا الباب رجعت تشتغل.")
+                      setting="faults", text="✅ كاميرا الباب رجعت تشتغل.",
+                      text_en="✅ The door camera is working again.")
     if event == "lock.io":
         return Record(H.SYSTEM, "relay", alert="relay", alert_event="fault",
                       setting="faults", gap=FAULT_GAP,
-                      text="⚠️ عطل في ريلاي القفل: الباب ربما ما ينفتح.\n" + message)
+                      text="⚠️ عطل في ريلاي القفل: الباب ربما ما ينفتح.\n" + message,
+                      text_en="⚠️ Lock relay fault: the door may not open.\n" + message)
     if event == "card.offline":
         return Record(H.SYSTEM, "card", alert="card", alert_event="offline",
                       setting="faults", gap=FAULT_GAP,
-                      text="💳 قارئ الكروت لا يرد: الكروت ما تفتح الباب لين يرجع.")
+                      text="💳 قارئ الكروت لا يرد: الكروت ما تفتح الباب لين يرجع.",
+                      text_en="💳 The card reader is not responding: cards won't open the door "
+                              "until it is back.")
     if event == "card.online":
         return Record(H.SYSTEM, "card")
     if event == "fingerprint.offline":
         return Record(H.SYSTEM, "fingerprint", alert="fingerprint", alert_event="offline",
                       setting="faults", gap=FAULT_GAP,
-                      text="👆 حساس البصمة لا يرد: البصمة ما تفتح الباب لين يرجع.")
+                      text="👆 حساس البصمة لا يرد: البصمة ما تفتح الباب لين يرجع.",
+                      text_en="👆 The fingerprint sensor is not responding: fingerprints won't "
+                              "open the door until it is back.")
     if event in ("fingerprint.offline", "fingerprint.online", "fingerprint.fault",
                  "fingerprint.error", "face.error", "ui.exception", "api.exception",
                  "api.auth"):
@@ -463,14 +546,15 @@ class Recorder:
             if last is not None and now - last < gap:
                 return
         self._last_alert[key] = now
-        lines = [record.text]
+        lines = [Texts(record.text, record.text_en)]
         if record.photo and not photo and record.category in (H.DENIED, H.DOORBELL):
-            lines.append("📷 بدون صورة (الكاميرا غير متاحة).")
-        lines.append(clock_line(ts))
+            lines.append(Texts("📷 بدون صورة (الكاميرا غير متاحة).",
+                               "📷 No picture (camera unavailable)."))
+        lines.append(Texts(clock_line(ts), clock_line(ts, ar=False)))
         options = None
         if record.ask:
             options = [{"id": "yes", "title": "نعم، افتح"}, {"id": "no", "title": "لا"}]
-        self.alerts.add(record.alert, record.alert_event, "\n".join(lines),
+        self.alerts.add(record.alert, record.alert_event, Texts.join(lines),
                         photo=photo, ask=record.ask, options=options)
 
 

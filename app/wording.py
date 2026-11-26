@@ -1,12 +1,50 @@
 """Shared wording for WhatsApp texts: durations, clock times, method names.
 
-WhatsApp texts are Arabic (the owner's language); command replies also come in
-English when the command was written in English.
+Every WhatsApp text -- alert, command reply -- is written in Arabic and in
+English at the same time, as one :class:`Texts`.  whatsapp/bot.js sends the
+languages listed in ``[bot] languages`` ("ar en": the Arabic message, then the
+same in English), each as its own WhatsApp message.
 """
 
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Texts:
+    """One WhatsApp text in Arabic (``ar``) and in English (``en``).
+
+    Both are written in the same pass, so an action with side effects (open
+    the door, create a guest code, take a picture) runs once, however many
+    languages the bot then sends.
+    """
+
+    ar: str
+    en: str
+
+    def pick(self, ar: bool) -> str:
+        """The Arabic or the English text (the other one if that one is empty)."""
+        return (self.ar or self.en) if ar else (self.en or self.ar)
+
+    def as_dict(self) -> dict[str, str]:
+        """``{"ar": ..., "en": ...}`` as the API sends it ("texts"); a language
+        without text is left out."""
+        return {lang: text for lang, text in (("ar", self.ar), ("en", self.en)) if text}
+
+    @staticmethod
+    def join(parts, sep: str = "\n") -> Texts:
+        """Pieces (usually lines) joined language by language; a plain string,
+        such as a time, is the same in both."""
+        both = [p if isinstance(p, Texts) else Texts(p, p) for p in parts]
+        return Texts(sep.join(p.ar for p in both), sep.join(p.en for p in both))
+
+
+def has_arabic(text: str) -> bool:
+    """True when ``text`` has at least one Arabic letter."""
+    return any("؀" <= ch <= "ۿ" for ch in text)
+
 
 # How the door was opened / what was refused, as shown to the owner.
 METHOD_AR = {
@@ -61,6 +99,7 @@ def ar_duration(seconds: float) -> str:
 
 
 def en_duration(seconds: float) -> str:
+    """90 -> "90 seconds", 120 -> "2 minutes", 3600 -> "1 hour"."""
     s = int(round(seconds))
     if s >= 3600 and s % 3600 == 0:
         n, unit = s // 3600, "hour"
@@ -76,9 +115,9 @@ def clock(ts: float | None = None) -> str:
     return time.strftime("%H:%M", time.localtime(ts) if ts is not None else time.localtime())
 
 
-def clock_line(ts: float | None = None) -> str:
-    """The last line of every alert."""
-    return "الساعة " + clock(ts)
+def clock_line(ts: float | None = None, ar: bool = True) -> str:
+    """The last line of every alert: "الساعة 14:05", in English "Time: 14:05"."""
+    return ("الساعة " if ar else "Time: ") + clock(ts)
 
 
 def mask_number(sender: str) -> str:
