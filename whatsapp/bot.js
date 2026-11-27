@@ -48,7 +48,8 @@ import makeWASocket, {
   jidDecode,
   jidNormalizedUser,
   normalizeMessageContent,
-  useMultiFileAuthState
+  useMultiFileAuthState,
+  WAMessageStubType
 } from 'baileys'
 import pino from 'pino'
 import QRCode from 'qrcode'
@@ -67,6 +68,8 @@ const LATE_ALERT_SECONDS = 300    // older alerts waited while WhatsApp was down
 const SUMMARY_FROM = 3            // this many late alerts in a row -> one summary message
 const SUMMARY_LINES = 15
 const SENT_MEMORY = 500
+const WRITTEN_KEEP = 300          // undecryptable messages whose time is remembered
+const WRITTEN_DAYS = 2
 const OFFLINE_BATCH = '100'       // held items asked for at a time (as Baileys does)
 const OFFLINE_QUIET_MS = 3000     // nothing more for this long: that batch is in
 const OFFLINE_EMPTY_ASKS = 10     // asked this often in a row with nothing sent: stop
@@ -207,8 +210,8 @@ function textOf (message) {
 // ------------------------------------------------------------------ languages
 // The bot's own messages, in every language it can send.
 const STALE_COMMAND = {
-  ar: '⏱ وصلتني رسالتك متأخرة (الباب كان غير متصل)، فما نفذتها. أرسلها مرة ثانية.',
-  en: '⏱ Your message reached me late (the door was offline), so I did not carry it out. Send it again.'
+  ar: '⏱ وصلتني رسالتك متأخرة، فما نفذتها. أرسلها مرة ثانية.',
+  en: '⏱ Your message reached me late, so I did not carry it out. Send it again.'
 }
 const DOOR_SILENT = {
   ar: '⚠️ برنامج الباب لا يرد الآن. جرّب بعد قليل.',
@@ -296,17 +299,68 @@ async function whoIsAsking (msg) {
   return null
 }
 
+// A message the Pi could not decrypt comes again once the phone and the Pi
+// agree on keys again -- stamped with the time it was SENT AGAIN, not when it
+// was written: an "افتح" from half an hour earlier looks brand new and opens
+// the door (seen 2026-11-27).  So the time each undecryptable message was
+// written is kept (in a file: the copy may come after a restart), and the
+// copy is judged by it.  Only ids and times, from chats the door listens to.
+let writtenFile = path.join(DATA, 'whatsapp-written.json')
+const writtenAt = new Map()   // message id -> unix seconds it was written
+const handledIds = new Set()  // commands already answered: a second copy is dropped
+
+function loadWritten () {
+  writtenAt.clear()
+  try {
+    const oldest = Date.now() / 1000 - WRITTEN_DAYS * 86400
+    for (const [id, t] of Object.entries(JSON.parse(fs.readFileSync(writtenFile, 'utf8')))) {
+      if (Number.isFinite(t) && t > oldest) writtenAt.set(id, t)
+    }
+  } catch { /* none yet */ }
+}
+
+function noteWritten (msg) {
+  const id = msg.key?.id
+  const t = Number(msg.messageTimestamp || 0)
+  if (!id || !t || writtenAt.get(id) <= t) return
+  writtenAt.set(id, t)
+  while (writtenAt.size > WRITTEN_KEEP) writtenAt.delete(writtenAt.keys().next().value)
+  try {
+    const tmp = `${writtenFile}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(writtenAt)), { mode: 0o600 })
+    fs.renameSync(tmp, writtenFile)
+  } catch (err) { log('written-time file:', err.message) }
+}
+
+/** When the message was written: the earliest time seen for its id. */
+const firstWritten = msg => Math.min(Number(msg.messageTimestamp || 0), writtenAt.get(msg.key?.id) ?? Infinity)
+
+function markHandled (id) {
+  handledIds.add(id)
+  if (handledIds.size > SENT_MEMORY) handledIds.delete(handledIds.values().next().value)
+}
+
 async function onMessage (msg) {
-  if (!msg?.message || sentIds.has(msg.key?.id)) return
+  const id = msg?.key?.id
+  if (!id || sentIds.has(id) || handledIds.has(id)) return
+  const undecrypted = msg.messageStubType === WAMessageStubType.CIPHERTEXT
+  if (!msg.message && !undecrypted) return
   const asker = await whoIsAsking(msg)
   if (!asker) return
+  if (undecrypted) {
+    // Baileys asks the phone to send it again; remember when it was written.
+    noteWritten(msg)
+    return
+  }
   const text = textOf(msg.message)
   if (!text) return
-  const age = Date.now() / 1000 - Number(msg.messageTimestamp || 0)
+  markHandled(id)
+  const age = Date.now() / 1000 - firstWritten(msg)
   if (age > STALE_SECONDS) {
-    // Sent while the Pi or the internet was down: opening the door now, maybe
-    // hours later, would surprise everyone.
-    log(`skipped a command ${Math.round(age)} s old`)
+    // Sent while the Pi or the internet was down, or sent again after a
+    // decryption failure: opening the door now, maybe hours later, would
+    // surprise everyone.
+    log(`skipped a command ${Math.round(age)} s old` + (writtenAt.has(id) ? ' (sent again after a decryption failure)' : ''))
     if (age < TELL_STALE_SECONDS) await send(asker.jid, textsIn(STALE_COMMAND))
     return
   }
@@ -600,6 +654,7 @@ async function main () {
     process.exit(0)
   }
   writeStatus('starting')
+  loadWritten()
   await connect()
   setInterval(pumpAlerts, ALERT_EVERY_MS)
 }
@@ -614,7 +669,10 @@ export const testing = {
   languagesOf,
   inLanguages,
   summaryOf,
-  watchOfflineQueue
+  watchOfflineQueue,
+  useWrittenFile (file) { writtenFile = file; loadWritten() },
+  writtenAt,
+  handledIds
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
