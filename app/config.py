@@ -250,8 +250,9 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # each as its own message (whatsapp/bot.js): "ar en" = Arabic, then
         # the same in English; "ar" or "en" alone = that language only.
         "languages": "ar en",
-        # "temp code" with no duration / no digits given.
-        "temp_code_minutes": "10",
+        # "temp code" with no duration / no digits given (the owner's choice,
+        # 2026-11-27: a guest code lasts one minute unless the message says).
+        "temp_code_minutes": "1",
         "temp_code_digits": "6",
         # No GET /alerts from the bot for this long -> the panel shows BOT OFF
         # and the doorbell tells the visitor the owner may be offline.

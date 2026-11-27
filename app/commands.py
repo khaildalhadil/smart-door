@@ -455,7 +455,7 @@ class CommandRouter:
         """A one-time guest code: ``code`` None = random, ``seconds`` None = default."""
         cfg = self.ctx.config
         if seconds is None:
-            seconds = cfg.getfloat("bot", "temp_code_minutes", 10.0) * 60
+            seconds = cfg.getfloat("bot", "temp_code_minutes", 1.0) * 60
         seconds = int(max(MIN_SECONDS, min(seconds, MAX_SECONDS)))
         if code is None:
             length = max(4, min(cfg.getint("bot", "temp_code_digits", 6), 8))
