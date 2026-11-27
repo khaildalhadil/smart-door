@@ -67,10 +67,14 @@ const LATE_ALERT_SECONDS = 300    // older alerts waited while WhatsApp was down
 const SUMMARY_FROM = 3            // this many late alerts in a row -> one summary message
 const SUMMARY_LINES = 15
 const SENT_MEMORY = 500
+const OFFLINE_BATCH = '100'       // held items asked for at a time (as Baileys does)
+const OFFLINE_QUIET_MS = 3000     // nothing more for this long: that batch is in
+const OFFLINE_EMPTY_ASKS = 10     // asked this often in a row with nothing sent: stop
 
 const args = process.argv.slice(2)
 // WA_DEBUG=1: one line per incoming message -- what kind, which chat type,
 // why it was skipped -- never its text or anyone's number.
+// WA_LOG_LEVEL=info (or debug): Baileys' own log, normally errors only.
 const DEBUG = process.env.WA_DEBUG === '1'
 const LINK = args.includes('--link')
 const PAIR = args.includes('--pair') ? (args[args.indexOf('--pair') + 1] || '').replace(/\D/g, '') : ''
@@ -417,6 +421,58 @@ async function showQr (qr) {
   retry = 0   // WhatsApp answered: the internet is fine
 }
 
+// What came in while the door was offline (Pi off, no internet) WhatsApp hands
+// over in batches, each one asked for with <ib><offline_batch/>.  Baileys asks
+// for the first batch only, and WhatsApp holds everything after it -- new
+// messages too -- until the next reconnect: after a night off, "افتح" reached
+// the door only after many restarts.  So ask for the next batch each time the
+// last one has come in, until WhatsApp says it holds nothing more
+// (<ib><offline/>).  Returns a function that stops the watch.
+function watchOfflineQueue (s, { quietMs = OFFLINE_QUIET_MS, tickMs = 1000 } = {}) {
+  let holding = false   // WhatsApp announced held items and has not said "done"
+  let lastSeen = 0      // when the last held item, or our last request, went by
+  let items = 0
+  let itemsAtAsk = 0
+  let batches = 0
+  let emptyAsks = 0
+
+  s.ws.on('CB:ib,,offline_preview', node => {
+    const preview = (Array.isArray(node.content) ? node.content : []).find(c => c.tag === 'offline_preview')
+    const { count = '?', ...kinds } = preview?.attrs || {}
+    holding = true
+    lastSeen = Date.now()          // Baileys asks for the first batch itself
+    items = itemsAtAsk = emptyAsks = 0
+    batches = 1
+    const parts = Object.entries(kinds).map(([kind, n]) => `${kind} ${n}`)
+    log(`WhatsApp holds ${count} item(s) from while the door was offline` +
+        (parts.length ? ` (${parts.join(', ')})` : ''))
+  })
+  s.ws.on('CB:ib,,offline', () => {
+    if (holding && batches > 1) log(`caught up: ${items} held item(s) in ${batches} batches`)
+    holding = false
+  })
+  for (const kind of ['message', 'receipt', 'notification', 'call']) {
+    s.ws.on(`CB:${kind},offline`, () => { items++; lastSeen = Date.now() })
+  }
+
+  const timer = setInterval(() => {
+    if (!holding || !s.ws.isOpen || Date.now() - lastSeen < quietMs) return
+    if (items > itemsAtAsk) emptyAsks = 0
+    else if (++emptyAsks >= OFFLINE_EMPTY_ASKS) {
+      log(`WhatsApp sent nothing more after ${batches} batch(es), ${items} held item(s); not asking again`)
+      holding = false
+      return
+    }
+    lastSeen = Date.now()
+    itemsAtAsk = items
+    batches++
+    if (batches % 10 === 0) log(`… ${items} held item(s) so far, asking for batch ${batches}`)
+    s.sendNode({ tag: 'ib', attrs: {}, content: [{ tag: 'offline_batch', attrs: { count: OFFLINE_BATCH } }] })
+      .catch(err => log('offline batch:', err.message))
+  }, tickMs)
+  return () => clearInterval(timer)
+}
+
 async function connect () {
   fs.mkdirSync(AUTH_DIR, { recursive: true, mode: 0o700 })
   fs.chmodSync(AUTH_DIR, 0o700)
@@ -427,7 +483,7 @@ async function connect () {
     auth: state,
     version,
     browser: Browsers.ubuntu('Smart Door'),
-    logger: pino({ level: DEBUG ? 'warn' : 'error' }),
+    logger: pino({ level: process.env.WA_LOG_LEVEL || (DEBUG ? 'warn' : 'error') }),
     // false: your phone keeps its notifications while the door is linked.
     markOnlineOnConnect: false,
     // The door needs no chat history: none is downloaded or kept.
@@ -436,6 +492,7 @@ async function connect () {
     shouldIgnoreJid: jid => isJidGroup(jid) || isJidBroadcast(jid) || isJidNewsletter(jid)
   })
   sock.ev.on('creds.update', saveCreds)
+  const stopOfflineWatch = watchOfflineQueue(sock)
 
   if (PAIR && !linked(state.creds)) {
     setTimeout(async () => {
@@ -465,6 +522,7 @@ async function connect () {
     }
     if (connection === 'close') {
       connected = false
+      stopOfflineWatch()
       const code = lastDisconnect?.error?.output?.statusCode
       // Not linked yet and the QRs simply ran out (every ~2.7 min): routine.
       const qrExpired = !linked(sock?.authState?.creds) && code === DisconnectReason.timedOut
@@ -555,7 +613,8 @@ export const testing = {
   settings,
   languagesOf,
   inLanguages,
-  summaryOf
+  summaryOf,
+  watchOfflineQueue
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
