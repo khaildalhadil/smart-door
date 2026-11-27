@@ -245,12 +245,29 @@ let pumping = false
 let retry = 0
 const sentIds = new Set()   // our own messages: never read back as commands
 
+// What the bot sent, kept in memory only (never on disk: it may hold a guest
+// code) for a day: a phone that cannot decrypt a message shows "Waiting for
+// this message" and asks for it again, and Baileys can only send it again if
+// getMessage hands it back.  Its own cache lasts 5 minutes and is keyed by
+// chat address -- replies go to the LID chat, alerts to the number -- so
+// without this the phone waits forever (seen 2026-11-27).
+const SENT_KEEP_MS = 24 * 3600 * 1000
+const sentMessages = new Map()   // id -> { message, at }
+
 function remember (sent) {
   const id = sent?.key?.id
   if (!id) return
   sentIds.add(id)
   if (sentIds.size > SENT_MEMORY) sentIds.delete(sentIds.values().next().value)
+  if (sent.message) sentMessages.set(id, { message: sent.message, at: Date.now() })
+  for (const [old, { at }] of sentMessages) {
+    if (sentMessages.size <= SENT_MEMORY && Date.now() - at < SENT_KEEP_MS) break
+    sentMessages.delete(old)
+  }
 }
+
+/** For Baileys' retries: a message this bot sent, by id. */
+const sentMessage = key => sentMessages.get(key?.id)?.message
 
 function me () {
   const user = sock?.user || {}
@@ -543,6 +560,8 @@ async function connect () {
     // The door needs no chat history: none is downloaded or kept.
     syncFullHistory: false,
     shouldSyncHistoryMessage: () => false,
+    // A message a phone could not decrypt is sent again from here.
+    getMessage: async key => sentMessage(key),
     shouldIgnoreJid: jid => isJidGroup(jid) || isJidBroadcast(jid) || isJidNewsletter(jid)
   })
   sock.ev.on('creds.update', saveCreds)
@@ -672,7 +691,10 @@ export const testing = {
   watchOfflineQueue,
   useWrittenFile (file) { writtenFile = file; loadWritten() },
   writtenAt,
-  handledIds
+  handledIds,
+  remember,
+  sentMessage,
+  sentMessages
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
