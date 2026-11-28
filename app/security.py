@@ -6,6 +6,12 @@ with :func:`hmac.compare_digest`.
 
 Lockout state is persisted to ``data/state.json`` so power-cycling the Pi does
 not hand an attacker a fresh set of attempts.
+
+Both limiters forget after ``[security] lockout_reset_seconds`` (5 min) of
+quiet: a wrong try that old no longer counts, and a lockout that ended that
+long ago no longer doubles the next one.  Someone trying code after code still
+meets 30 s, 60 s, 120 s ... up to ``lockout_max_seconds``; the owner who mistypes
+once days later gets the normal 3 tries and, at worst, 30 s.
 """
 
 from __future__ import annotations
@@ -20,6 +26,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Config, new_salt
+
+
+def reset_seconds(config: Config) -> float:
+    """Quiet time after which failures and lockout doubling are forgotten
+    (0 = never)."""
+    return max(0.0, config.getfloat("security", "lockout_reset_seconds", 300.0))
 
 
 def hash_passcode(passcode: str, salt: str, iterations: int) -> str:
@@ -48,6 +60,7 @@ class PasscodeManager:
         self._lock = threading.RLock()
         self._state_path = config.path_for("logging", "file").parent / "state.json"
         self._failures = 0
+        self._last_failure = 0.0
         self._lockout_until = 0.0
         self._lockout_level = 0
         self._load_state()
@@ -58,6 +71,7 @@ class PasscodeManager:
             with open(self._state_path, encoding="utf-8") as fh:
                 data = json.load(fh)
             self._failures = int(data.get("failures", 0))
+            self._last_failure = float(data.get("last_failure", 0.0))
             self._lockout_until = float(data.get("lockout_until", 0.0))
             self._lockout_level = int(data.get("lockout_level", 0))
             # A clock that jumped backwards (no RTC on the Pi) must not create
@@ -66,12 +80,14 @@ class PasscodeManager:
                 self._lockout_until = time.time() + self._max_lockout()
         except (OSError, ValueError, TypeError):
             self._failures = 0
+            self._last_failure = 0.0
             self._lockout_until = 0.0
             self._lockout_level = 0
 
     def _save_state(self) -> None:
         payload = {
             "failures": self._failures,
+            "last_failure": self._last_failure,
             "lockout_until": self._lockout_until,
             "lockout_level": self._lockout_level,
         }
@@ -143,8 +159,15 @@ class PasscodeManager:
                 self._save_state()
                 return AttemptResult(True, False, self._max_attempts(), 0.0, "ok")
 
+            now = time.time()
+            quiet = reset_seconds(self.config)
+            if quiet and now - self._last_failure > quiet:
+                self._failures = 0             # the earlier wrong tries are old news
             self._failures += 1
+            self._last_failure = now
             if self._failures >= self._max_attempts():
+                if quiet and now - self._lockout_until > quiet:
+                    self._lockout_level = 0    # last lockout long over: start at 30 s
                 self._lockout_level += 1
                 self._lockout_until = time.time() + self._lockout_duration(self._lockout_level)
                 self._failures = 0
@@ -205,12 +228,14 @@ class LoginLimiter:
         self._lock = threading.Lock()
         self._path = config.path_for("logging", "file").parent / state_file
         self._failures = 0
+        self._last = 0.0
         self._until = 0.0
         self._level = 0
         try:
             with open(self._path, encoding="utf-8") as fh:
                 data = json.load(fh)
             self._failures = int(data.get("failures", 0))
+            self._last = float(data.get("last", 0.0))
             self._until = min(float(data.get("until", 0.0)),
                               time.time() + self._max_lockout())
             self._level = int(data.get("level", 0))
@@ -225,8 +250,8 @@ class LoginLimiter:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._path.with_suffix(".json.tmp")
             with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump({"failures": self._failures, "until": self._until,
-                           "level": self._level}, fh)
+                json.dump({"failures": self._failures, "last": self._last,
+                           "until": self._until, "level": self._level}, fh)
             os.replace(tmp, self._path)
         except OSError:
             pass
@@ -249,12 +274,19 @@ class LoginLimiter:
                 self._until = 0.0
                 self._save()
                 return AttemptResult(True, False, max_attempts, 0.0, "ok")
+            now = time.time()
+            quiet = reset_seconds(self.config)
+            if quiet and now - self._last > quiet:
+                self._failures = 0
             self._failures += 1
+            self._last = now
             if self._failures < max_attempts:
                 self._save()
                 return AttemptResult(False, False, max_attempts - self._failures,
                                      0.0, "wrong")
             self._failures = 0
+            if quiet and now - self._until > quiet:
+                self._level = 0
             self._level += 1
             base = max(1.0, self.config.getfloat("security", "lockout_seconds", 30.0))
             backoff = max(1.0, self.config.getfloat("security", "lockout_backoff", 2.0))

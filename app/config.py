@@ -49,6 +49,10 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # Each further burst of failures multiplies the lockout, capped here.
         "lockout_backoff": "2.0",
         "lockout_max_seconds": "600",
+        # Quiet this long and earlier wrong tries stop counting, and the next
+        # lockout starts again at lockout_seconds (0 = never forget).  Applies
+        # to the keypad, the panel PIN and the card reader.
+        "lockout_reset_seconds": "300",
         # Admin session auto-logout after this long idle.
         "session_timeout_seconds": "120",
     },

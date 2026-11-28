@@ -65,7 +65,8 @@ python3 main.py --simulate --windowed
 | | `unlock_seconds` | 5 | مدة الفتح |
 | | `max_unlock_seconds` | 10 | حد أعلى لا يُتجاوز، لحماية ملف القفل |
 | `security` | `max_attempts` | 3 | عدد المحاولات قبل الحظر |
-| | `lockout_seconds` | 30 | مدة الحظر الأولى |
+| | `lockout_seconds` | 30 | مدة الحظر الأولى (تتضاعف مع كل حظر متتالٍ، حتى `lockout_max_seconds` 600) |
+| | `lockout_reset_seconds` | 300 | بعد 5 دقائق هدوء تُنسى المحاولات الخاطئة القديمة، ويرجع الحظر التالي إلى 30 ثانية (رمز الباب وPIN اللوحة والكروت) |
 | | `session_timeout_seconds` | 120 | خروج تلقائي من القائمة |
 | | `passcode_hash` / `passcode_salt` | | رمز الباب مشفّرًا (PBKDF2)، لا يُخزن كنص |
 | `fingerprint` | `enabled` / `probe_confirmed` | false | تُضبط تلقائيًا بأداة الفحص |
