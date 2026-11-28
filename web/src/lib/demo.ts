@@ -2,7 +2,7 @@
  *  Accounts live in memory under the same rules as the database. */
 import { fmtTime, startOfDay } from "./format";
 import { EMAIL, MIN_PASSWORD } from "./passwords";
-import type { Account, AuditRow, DoorEvent, DoorStatus, Me, Role, Source } from "./types";
+import type { Account, AuditRow, ChatMessage, DoorEvent, DoorStatus, Me, Role, Source } from "./types";
 import { visibleTo } from "./wording";
 
 let seedValue = 20261113;
@@ -127,6 +127,9 @@ export class DemoSource implements Source {
   readonly demo = true;
   private accounts: Account[];
   private changes: AuditRow[];
+  private chat: ChatMessage[] = [];
+  private chatId = 0;
+  private chatListeners = new Set<(m: ChatMessage) => void>();
 
   constructor(private role: Role) {
     const now = Date.now(), day = 86400000;
@@ -240,4 +243,69 @@ export class DemoSource implements Source {
     this.note("password.reset", target, null, null);
     return later({ ok: true });
   }
+
+  // ------------------------------------------------ chat (answered right here)
+  async chatList(limit: number) {
+    this.admin();
+    return this.chat.slice(-limit).map((m) => ({ ...m }));
+  }
+  async chatSend(text: string) {
+    this.admin();
+    const body = String(text).trim();
+    need(body.length >= 1 && body.length <= 1000, "bad_request");
+    const asked = this.chatPut({ sender: "admin", body, texts: null, photo: "", intent: "",
+                                 status: "pending", reply_to: null });
+    setTimeout(() => this.chatPut({ ...asked, status: "working" }), 400);
+    setTimeout(() => {
+      const [intent, ar, en, photo] = demoReply(body);
+      this.chatPut({ sender: "door", body: /[\u0600-\u06FF]/.test(body) ? ar : en, texts: { ar, en },
+                     photo, intent, status: "done", reply_to: asked.id });
+      this.chatPut({ ...asked, status: "done", intent });
+    }, 1300);
+    return { ...asked };
+  }
+  async chatClear() {
+    this.admin();
+    this.chat = [];
+  }
+  chatSubscribe(onChange: (m: ChatMessage) => void) {
+    this.chatListeners.add(onChange);
+    return () => { this.chatListeners.delete(onChange); };
+  }
+  private chatPut(m: Partial<ChatMessage> & Omit<ChatMessage, "id" | "created_at">): ChatMessage {
+    const row: ChatMessage = { id: m.id ?? ++this.chatId, created_at: m.created_at ?? iso(Date.now()), ...m };
+    const at = this.chat.findIndex((x) => x.id === row.id);
+    if (at >= 0) this.chat[at] = row;
+    else this.chat.push(row);
+    for (const listener of this.chatListeners) listener({ ...row });
+    return row;
+  }
+}
+
+/** What the demo door says: [intent, Arabic, English, picture]. */
+function demoReply(text: string): [string, string, string, string] {
+  const t = text.toLowerCase();
+  if (/افتح|فتح|open/.test(t)) {
+    return ["open", "🚪 تم فتح الباب، ويقفل تلقائيًا بعد 5 ثوانٍ. (عرض تجريبي)",
+            "🚪 Door opened. It locks again in 5 seconds. (demo)", ""];
+  }
+  if (/اقفل|قفل|lock/.test(t)) return ["lock", "🔒 الباب مقفل أصلًا.", "🔒 The door is already locked.", ""];
+  if (/صور|camera|photo|picture|pic/.test(t)) {
+    return ["photo", "📷 كاميرا الباب، الآن.", "📷 Door camera, just now.", picture("doorbell", Date.now())];
+  }
+  if (/رمز|كود|ضيف|code|guest/.test(t)) {
+    const code = String(100000 + Math.floor(Math.random() * 900000));
+    return ["tempcode", `🔑 رمز ضيف: ${code}\nصالح لمرة واحدة، لمدة دقيقة.`,
+            `🔑 Guest code: ${code}\nGood for one entry, for one minute.`, ""];
+  }
+  if (/الحالة|حالة|status|state/.test(t)) {
+    return ["status", "🔒 الباب مقفل.\n📷 الكاميرا تعمل · 👆 البصمة تعمل · 💳 قارئ الكروت يعمل\n✅ لا يوجد إنذار.",
+            "🔒 The door is locked.\n📷 Camera on · 👆 Fingerprint on · 💳 Card reader on\n✅ No alarm.", ""];
+  }
+  if (/سجل|log|history/.test(t)) {
+    return ["log", "📋 آخر الأحداث:\n• دخول بالوجه — Khalid\n• رنّ الجرس\n• رمز خاطئ",
+            "📋 Latest events:\n• Entry by face — Khalid\n• Doorbell rang\n• Wrong code", ""];
+  }
+  return ["ai", "🤖 هذا عرض تجريبي. في النظام الحقيقي يفهم OpenAI الرسائل الحرة، مثل «جايني ضيف ابي رمز»، وينفّذها.",
+          "🤖 This is a demo. On the real door OpenAI understands free text, like “a guest is coming, I need a code”, and acts on it.", ""];
 }

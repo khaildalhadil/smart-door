@@ -102,6 +102,12 @@ def _unlock(reason: str) -> Record | None:
                       alert_event="visitor", setting="entries",
                       text="🚪 الزائر دخل بعد موافقتك على الجرس.",
                       text_en="🚪 The visitor came in after you said yes to the doorbell.")
+    if reason == "web":
+        return Record(H.ENTRY, "web", photo="web", alert="entry",
+                      alert_event="remote", setting="entries",
+                      text="🚪 انفتح الباب من موقع لوحة المتابعة. هذي الصورة من عند الباب.",
+                      text_en="🚪 The door was opened from the dashboard website. "
+                              "Here is a picture from the door.")
     if reason.startswith("whatsapp"):
         return Record(H.ENTRY, "whatsapp", photo="whatsapp", alert="entry",
                       alert_event="remote", setting="entries",
@@ -367,7 +373,7 @@ def classify(event: str, message: str, level: str = "INFO",
 
     # ---------------------------------------------------------- remote, admin
     if event == "bot.command":
-        return Record(H.REMOTE, "whatsapp")
+        return Record(H.REMOTE, "web" if " from web:" in message else "whatsapp")
     if event == "tempcode.add":
         return Record(H.REMOTE, "temp_code")
     if event == "session.login":

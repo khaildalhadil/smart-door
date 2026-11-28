@@ -50,6 +50,19 @@ export interface AuditRow {
   new_role: string | null;
 }
 
+/** One message of the admin's chat with the door (table door_chat, supabase/chat.sql). */
+export interface ChatMessage {
+  id: number;
+  created_at: string;
+  sender: "admin" | "door";
+  body: string;
+  texts: { ar?: string; en?: string } | null;   // the door's reply in both languages
+  photo: string;                                 // path in the door-photos bucket ("data:" in the demo)
+  intent: string;
+  status: "pending" | "working" | "done" | "stale" | "error";
+  reply_to: number | null;
+}
+
 /** What the dashboard reads and does; the Supabase client and the demo both provide it. */
 export interface Source {
   readonly demo: boolean;
@@ -69,4 +82,10 @@ export interface Source {
   createAccount(email: string, password: string, role: Role): Promise<unknown>;
   deleteAccount(userId: string): Promise<unknown>;
   resetPassword(userId: string, password: string): Promise<unknown>;
+  // Chat with the door (admins only).
+  chatList(limit: number): Promise<ChatMessage[]>;
+  chatSend(text: string): Promise<ChatMessage>;
+  chatClear(): Promise<void>;
+  /** Calls ``onChange`` for every new or changed message; returns "stop". */
+  chatSubscribe(onChange: (m: ChatMessage) => void): () => void;
 }

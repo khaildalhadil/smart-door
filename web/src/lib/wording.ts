@@ -26,7 +26,7 @@ export const PHOTO_CATEGORIES = ["entry", "denied", "doorbell", "alarm"];
 
 const METHOD: Words = {
   keypad: ["رمز الباب", "Door code"], temp_code: ["رمز مؤقت", "Guest code"], face: ["الوجه", "Face"],
-  fingerprint: ["البصمة", "Fingerprint"], card: ["الكرت", "Card"], whatsapp: ["واتساب", "WhatsApp"],
+  fingerprint: ["البصمة", "Fingerprint"], card: ["الكرت", "Card"], whatsapp: ["واتساب", "WhatsApp"], web: ["الموقع", "Website"],
   doorbell: ["عبر الجرس", "Via doorbell"], menu: ["لوحة التحكم", "Control panel"], login: ["PIN", "PIN"],
   fire: ["حريق", "Fire"], smoke: ["دخان", "Smoke"], test: ["تجربة", "Test"], camera: ["الكاميرا", "Camera"],
   relay: ["الريلاي", "Relay"], other: ["أخرى", "Other"],
@@ -39,13 +39,13 @@ export const methodName = (key: string, l?: Lang) => word(METHOD, key, l);
 export const groups = () => [
   { key: "bio", name: tr("وجه وبصمة", "Face & fingerprint"), color: "var(--series-1)" },
   { key: "code", name: tr("رمز أو كرت", "Code or card"), color: "var(--series-2)" },
-  { key: "remote", name: tr("عن بُعد (واتساب)", "Remote (WhatsApp)"), color: "var(--series-3)" },
+  { key: "remote", name: tr("عن بُعد (واتساب والموقع)", "Remote (WhatsApp, website)"), color: "var(--series-3)" },
   { key: "other", name: tr("أخرى", "Other"), color: "var(--series-other)" },
 ];
 
 export const GROUP_OF: Record<string, string> = {
   face: "bio", fingerprint: "bio", keypad: "code", temp_code: "code", card: "code",
-  whatsapp: "remote", doorbell: "remote",
+  whatsapp: "remote", web: "remote", doorbell: "remote",
 };
 
 const COMMAND: Words = {
@@ -116,6 +116,7 @@ export const permissions = (): [string, boolean, boolean][] => [
   [tr("صور الكاميرا", "Camera pictures"), true, false],
   [tr("أوامر واتساب وسجل الإدارة والنظام", "WhatsApp commands, admin and system records"), true, false],
   [tr("إدارة الحسابات والصلاحيات وسجل تغييراتها", "Accounts, roles and their change log"), true, false],
+  [tr("مراسلة الباب من الموقع (مثل واتساب)", "Chatting with the door from the website (like WhatsApp)"), true, false],
 ];
 
 /** Refusals a member sees. */
@@ -188,7 +189,8 @@ export function describe(r: DoorEvent, l: Lang = lang()): string {
     case "remote": {
       if (r.event === "tempcode.add") return t("رمز مؤقت جديد", "New guest code");
       const first = detail.split(" ")[0];
-      return t("أمر واتساب: ", "WhatsApp command: ") + word(COMMAND, first, l);
+      return (r.method === "web" ? t("أمر من الموقع: ", "Website command: ")
+                                 : t("أمر واتساب: ", "WhatsApp command: ")) + word(COMMAND, first, l);
     }
     case "admin":
       return word(ADMIN, r.event, l);

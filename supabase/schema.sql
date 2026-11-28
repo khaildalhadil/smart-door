@@ -10,6 +10,7 @@
 --   door_status    one row: the door right now (heartbeat every minute)
 --   door-photos    private bucket with the camera pictures
 --   door_members   who may use the dashboard, and with which role
+--   door_chat      admins' messages to the door and its replies (section 10)
 --   door_audit     who changed which account, and when
 --
 -- Two roles.  The rules live HERE, in row-level security and in the
@@ -318,3 +319,62 @@ select u.id, 'admin'
 from auth.users u
 where lower(u.email) = lower('you@example.com')
 on conflict (user_id) do update set role = 'admin', updated_at = now();
+
+
+-- 10) Chat with the door (admins only) ------------------------------------------
+--     Same as supabase/chat.sql: the dashboard writes, the Pi answers.
+create table if not exists public.door_chat (
+  id          bigint generated always as identity primary key,
+  created_at  timestamptz not null default now(),
+  user_id     uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  sender      text not null check (sender in ('admin', 'door')),
+  body        text not null default '' check (char_length(body) <= 4000),
+  texts       jsonb not null default '{}'::jsonb,   -- the reply in Arabic and English
+  photo       text not null default '',             -- path in the door-photos bucket
+  intent      text not null default '',             -- open, status, photo, ai:... (log)
+  status      text not null default 'pending'
+              check (status in ('pending', 'working', 'done', 'stale', 'error')),
+  reply_to    bigint references public.door_chat (id) on delete cascade
+);
+create index if not exists door_chat_pending on public.door_chat (id) where status = 'pending';
+create index if not exists door_chat_mine on public.door_chat (user_id, id);
+alter table public.door_chat enable row level security;
+
+drop policy if exists "door admins read own chat" on public.door_chat;
+create policy "door admins read own chat" on public.door_chat
+  for select to authenticated
+  using (user_id = (select auth.uid()) and (select public.door_role()) = 'admin');
+
+-- Only a plain new message: the Pi alone writes replies, statuses and pictures.
+drop policy if exists "door admins write to the door" on public.door_chat;
+create policy "door admins write to the door" on public.door_chat
+  for insert to authenticated
+  with check (
+    user_id = (select auth.uid())
+    and (select public.door_role()) = 'admin'
+    and sender = 'admin' and status = 'pending'
+    and reply_to is null and photo = '' and intent = '' and texts = '{}'::jsonb
+    and char_length(body) between 1 and 1000
+    and created_at between now() - interval '1 minute' and now() + interval '1 minute'
+  );
+
+drop policy if exists "door admins clear own chat" on public.door_chat;
+create policy "door admins clear own chat" on public.door_chat
+  for delete to authenticated
+  using (user_id = (select auth.uid()) and (select public.door_role()) = 'admin');
+
+revoke all on public.door_chat from anon, authenticated;
+grant select, insert, delete on public.door_chat to authenticated;
+grant select, insert, update, delete on public.door_chat to service_role;
+do $$
+begin
+  execute format('grant usage on sequence %s to authenticated, service_role',
+                 pg_get_serial_sequence('public.door_chat', 'id'));
+end $$;
+
+-- Replies appear in the page as soon as the Pi writes them.
+do $$
+begin
+  alter publication supabase_realtime add table public.door_chat;
+exception when duplicate_object then null;
+end $$;

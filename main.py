@@ -27,6 +27,7 @@ from app.api import ApiServer
 from app.buzzer import Buzzer
 from app.cloud import CloudSync
 from app.commands import CommandRouter
+from app.webchat import WebChat
 from app.config import CONFIG_PATH, Config
 from app.doorbell import Doorbell
 from app.events import EventLog
@@ -140,6 +141,9 @@ def main(argv=None) -> int:
         }
 
     cloud.start(status=live_status)
+    # Admins write to the door from the dashboard, like on WhatsApp.
+    webchat = WebChat(ctx, cloud)
+    webchat.start()
 
     def shutdown() -> None:
         """Every exit path: stop the helpers, then lock the door."""
@@ -151,6 +155,7 @@ def main(argv=None) -> int:
         fingerprints.close()
         cards.close()
         lock.close()
+        webchat.close()
         recorder.close()   # after the lock, so "relay released" is recorded too
         cloud.close()
         history.close()

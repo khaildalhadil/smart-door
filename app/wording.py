@@ -121,7 +121,10 @@ def clock_line(ts: float | None = None, ar: bool = True) -> str:
 
 
 def mask_number(sender: str) -> str:
-    """A phone number for the log: only its last four digits."""
+    """A phone number for the log: only its last four digits.  A dashboard
+    sender ("web:<name>", app/webchat.py) stays as it is."""
+    if sender.startswith("web:"):
+        return sender[:20]
     digits = "".join(ch for ch in sender if ch.isdigit())
     return "…" + digits[-4:] if len(digits) >= 4 else (sender[:12] or "?")
 

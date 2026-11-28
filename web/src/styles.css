@@ -441,3 +441,55 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* -------------------------------------------------------------------- chat */
+.chat { margin-bottom: 16px; }
+.chat-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.chat-head h2 { display: flex; align-items: center; gap: 8px; margin: 0; flex: 1; }
+.chat-presence { display: inline-flex; align-items: center; gap: 6px; font-size: 0.86rem; color: var(--muted); }
+.chat-presence .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.chat-presence.on { color: var(--good-text); }
+.chat-presence.on .dot { background: var(--good); }
+.chat-note { margin: 8px 0 0; padding: 8px 12px; border-radius: 10px; background: var(--surface-2);
+             color: var(--text-2); font-size: 0.88rem; }
+.chat-list { display: flex; flex-direction: column; gap: 8px; height: 380px; overflow-y: auto;
+             margin: 12px 0 10px; padding: 12px; border-radius: 12px; background: var(--surface-2);
+             border: 1px solid var(--border); overscroll-behavior: contain; }
+.chat-list .empty { margin: auto; padding: 8px; }
+.chat-row { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.bubble { max-width: min(80%, 520px); padding: 8px 12px 6px; border-radius: 14px; background: var(--surface);
+          border: 1px solid var(--border); box-shadow: var(--shadow); }
+.bubble p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.bubble.mine { background: var(--accent); color: var(--on-accent); border-color: transparent;
+               border-end-end-radius: 4px; }
+.bubble.door { align-self: flex-start; border-end-start-radius: 4px; }
+.bubble .who { display: flex; align-items: center; gap: 4px; font-size: 0.78rem; font-weight: 650;
+               color: var(--text-2); margin-bottom: 2px; }
+.bubble .who .icon { width: 14px; height: 14px; }
+.bubble .meta { display: flex; justify-content: flex-end; align-items: center; gap: 4px;
+                font-size: 0.72rem; opacity: 0.78; margin-top: 3px; }
+.bubble .meta .icon { width: 14px; height: 14px; }
+.bubble img { display: block; margin-top: 6px; max-width: 100%; border-radius: 10px; }
+.bubble.typing { display: inline-flex; gap: 4px; padding: 12px 14px; }
+.bubble.typing span { width: 7px; height: 7px; border-radius: 50%; background: var(--muted);
+                      animation: chat-dot 1.2s infinite ease-in-out; }
+.bubble.typing span:nth-child(2) { animation-delay: 0.15s; }
+.bubble.typing span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes chat-dot { 0%, 80%, 100% { opacity: 0.3; transform: none; } 40% { opacity: 1; transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .bubble.typing span { animation: none; } }
+.chat-late { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0; max-width: min(80%, 520px);
+             font-size: 0.82rem; color: var(--critical-text); }
+.chat-late button { font: inherit; font-weight: 650; color: var(--accent); background: none; border: none;
+                    cursor: pointer; padding: 0; }
+.chat-quick { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.chat-quick button { font: inherit; font-size: 0.86rem; padding: 4px 12px; min-height: 32px; border-radius: 999px;
+                     border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; }
+.chat-quick button:hover { background: var(--surface-2); }
+.chat-quick button:disabled { opacity: 0.45; cursor: default; }
+.chat-compose { display: flex; gap: 8px; align-items: flex-end; }
+.chat-compose textarea { flex: 1; min-width: 0; min-height: 42px; max-height: 120px; resize: none; font: inherit;
+                         padding: 9px 12px; border-radius: 12px; border: 1px solid var(--border);
+                         background: var(--page); color: var(--text); }
+.chat-compose textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-compose .button { min-height: 42px; min-width: 46px; justify-content: center; }
+[dir="rtl"] .chat-compose .icon { transform: scaleX(-1); }

@@ -252,14 +252,17 @@ class CommandRouter:
         self.ai = Assistant(ctx, self)
 
     # ------------------------------------------------------------- entry point
-    def handle(self, text: str, sender: str = "", self_chat: bool = False) -> dict:
+    def handle(self, text: str, sender: str = "", self_chat: bool = False,
+               verified: bool = False) -> dict:
         """The answer to one WhatsApp message, as the API returns it.
         ``self_chat``: it came from the owner's "message yourself" chat, which
-        also holds their own notes."""
+        also holds their own notes.  ``verified``: the caller has already
+        checked who wrote it (app/webchat.py: a dashboard admin), so the
+        ``[bot] owners`` phone list does not apply."""
         raw = (text or "").strip()
         ar = has_arabic(raw) or not any(ch.isalpha() for ch in raw)
         events = self.ctx.events
-        if not self._authorized(sender):
+        if not verified and not self._authorized(sender):
             shown = "".join(ch if ch.isprintable() else " " for ch in raw[:60])
             events.warning("bot.deny", f"{mask_number(sender)}: {shown}")
             return self._result("denied", Texts(
@@ -355,13 +358,19 @@ class CommandRouter:
         return hazards.alarms() if hazards is not None else []
 
     # ----------------------------------------------------------------- actions
-    def _do_open(self, _toks, ar: bool, _sender: str) -> dict:
+    @staticmethod
+    def _channel(sender: str) -> str:
+        """The lock's reason for a remote command: "web" for the dashboard
+        chat (app/webchat.py), else "whatsapp"."""
+        return "web" if sender.startswith("web:") else "whatsapp"
+
+    def _do_open(self, _toks, ar: bool, sender: str) -> dict:
         lock, cfg = self.ctx.lock, self.ctx.config
         if lock.backend.simulated:
             return self._result("open", Texts(
                 "⚠️ القفل في وضع المحاكاة (الريلاي غير متصل): الباب ما ينفتح فعليًا.",
                 "⚠️ The lock is in simulation mode (no relay): the door cannot open."), ar=ar)
-        if not lock.unlock(reason="whatsapp"):
+        if not lock.unlock(reason=self._channel(sender)):
             return self._result("open", Texts(
                 "⚠️ عطل في الريلاي: الباب ما انفتح. راجع سجل الأحداث على اللوحة.",
                 "⚠️ Relay fault: the door did not open. See the event log on the panel."), ar=ar)
@@ -370,10 +379,10 @@ class CommandRouter:
             f"🚪 تم فتح الباب، ويقفل تلقائيًا بعد {ar_duration(seconds)}.",
             f"🚪 Door opened. It locks again in {en_duration(seconds)}."), ar=ar)
 
-    def _do_lock(self, _toks, ar: bool, _sender: str) -> dict:
+    def _do_lock(self, _toks, ar: bool, sender: str) -> dict:
         lock = self.ctx.lock
         was_open = lock.status().is_unlocked
-        lock.lock(reason="whatsapp")
+        lock.lock(reason=self._channel(sender))
         lines = [Texts("🔒 تم قفل الباب.", "🔒 Door locked.") if was_open else
                  Texts("🔒 الباب مقفل أصلًا.", "🔒 The door is already locked.")]
         if self._alarms():

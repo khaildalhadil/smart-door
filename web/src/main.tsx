@@ -3,7 +3,8 @@
  * Reads the door's history from Supabase (tables door_events / door_status,
  * bucket door-photos; see supabase/schema.sql) and shows it: headline numbers,
  * charts, a short written analysis, the camera pictures and the event log.
- * Nothing here can open the door or change the door's data.
+ * The one way it acts on the door: an admin's chat (components/Chat.tsx),
+ * which the Pi answers like a WhatsApp message (app/webchat.py).
  *
  * Two roles, decided by the database (door_members + row-level security): an
  * admin sees everything and manages the dashboard accounts; a member sees the

@@ -22,4 +22,5 @@ window.DOOR_CONFIG = {
   table: "door_events",
   statusTable: "door_status",
   bucket: "door-photos",
+  chatTable: "door_chat",   // supabase/chat.sql
 };

@@ -61,6 +61,10 @@ export function errorText(err: unknown): string {
     return tr("لا توجد صلاحية لهذا. تأكد أن supabase/schema.sql منفّذ كاملًا.",
               "No permission for this. Make sure supabase/schema.sql ran in full.");
   }
+  if (/door_chat/i.test(message) && /does not exist|42P01|PGRST205|schema cache/i.test(message)) {
+    return tr("المراسلة غير مهيأة بعد: نفّذ supabase/chat.sql في Supabase ← SQL Editor.",
+              "The chat isn't set up yet: run supabase/chat.sql in Supabase → SQL Editor.");
+  }
   if (/does not exist|42P01|PGRST205/i.test(message)) {
     return tr("الجداول غير موجودة. نفّذ supabase/schema.sql في SQL Editor.",
               "The tables don't exist. Run supabase/schema.sql in the SQL Editor.");

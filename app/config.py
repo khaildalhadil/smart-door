@@ -295,6 +295,19 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # Pictures older than this are deleted from the bucket.  0 = never.
         "photo_keep_days": "90",
     },
+    "webchat": {
+        # Admins write to the door from the dashboard, like on WhatsApp
+        # (app/webchat.py, table door_chat in supabase/chat.sql).  Needs the
+        # same Supabase keys as [cloud]; the answers come from app/commands.py
+        # and, for free text, OpenAI with the key in .env.
+        "enabled": "true",
+        "table": "door_chat",
+        # How often the Pi asks Supabase for new messages.
+        "poll_seconds": "2",
+        # A message older than this when the Pi sees it (the door was offline)
+        # is not carried out: "افتح" written an hour ago must not open now.
+        "stale_seconds": "90",
+    },
     "ui": {
         "fullscreen": "true",
         "width": "800",

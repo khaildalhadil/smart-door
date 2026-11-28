@@ -50,6 +50,21 @@ def iso_utc(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="milliseconds")
 
 
+def check_response(response, what: str) -> None:
+    """Raise unless Supabase said yes: ``requests.RequestException`` for what
+    is worth retrying soon (timeouts, 429, 5xx), :class:`CloudRefused` for a
+    clear "no" (key, table, bucket, policy)."""
+    if response.status_code < 400:
+        return
+    body = " ".join(response.text.split())[:240]
+    message = f"{what}: HTTP {response.status_code} {body}"
+    if response.status_code in (408, 425, 429) or response.status_code >= 500:
+        import requests
+
+        raise requests.RequestException(message)
+    raise CloudRefused(message)
+
+
 def auth_headers(key: str) -> dict:
     """New keys (``sb_secret_...``) go in ``apikey`` only; the legacy JWT keys
     are also expected as a bearer token."""
@@ -208,15 +223,7 @@ class CloudSync:
 
     # --------------------------------------------------------------------- HTTP
     def _check(self, response, what: str) -> None:
-        if response.status_code < 400:
-            return
-        body = " ".join(response.text.split())[:240]
-        message = f"{what}: HTTP {response.status_code} {body}"
-        if response.status_code in (408, 425, 429) or response.status_code >= 500:
-            import requests
-
-            raise requests.RequestException(message)   # worth retrying soon
-        raise CloudRefused(message)
+        check_response(response, what)
 
     def _upsert(self, table: str, key: str, rows: list[dict]) -> None:
         response = self._session.post(

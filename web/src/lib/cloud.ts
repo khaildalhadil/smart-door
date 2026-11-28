@@ -1,8 +1,9 @@
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
 import { CFG, MAX_PAGES, PAGE, SIGN_SECONDS } from "./config";
-import type { Account, AuditRow, DoorEvent, DoorStatus, Me, Role, Source } from "./types";
+import type { Account, AuditRow, ChatMessage, DoorEvent, DoorStatus, Me, Role, Source } from "./types";
 
 const COLUMNS = "uid,ts,category,method,person,event,detail,level,photo";
+const CHAT_COLUMNS = "id,created_at,sender,body,texts,photo,intent,status,reply_to";
 
 type Factory = typeof createClient;
 declare global {
@@ -154,5 +155,39 @@ export class CloudSource implements Source {
   unsubscribe(): void {
     if (this.channel) this.client.removeChannel(this.channel);
     this.channel = null;
+  }
+
+  // ------------------------------------------------- chat with the door (admins)
+  // The Pi (app/webchat.py) answers each message; row-level security shows an
+  // admin their own conversation only.
+  async chatList(limit: number): Promise<ChatMessage[]> {
+    const { data, error } = await this.client.from(CFG.chatTable).select(CHAT_COLUMNS)
+      .order("id", { ascending: false }).limit(limit);
+    if (error) throw error;
+    return ((data as ChatMessage[]) || []).reverse();
+  }
+
+  async chatSend(text: string): Promise<ChatMessage> {
+    const { data, error } = await this.client.from(CFG.chatTable)
+      .insert({ sender: "admin", body: text }).select(CHAT_COLUMNS).single();
+    if (error) throw error;
+    return data as ChatMessage;
+  }
+
+  async chatClear(): Promise<void> {
+    const { data } = await this.client.auth.getUser();
+    if (!data?.user) throw new Error("no_session");
+    const { error } = await this.client.from(CFG.chatTable).delete().eq("user_id", data.user.id);
+    if (error) throw error;
+  }
+
+  chatSubscribe(onChange: (m: ChatMessage) => void): () => void {
+    const channel = this.client.channel("door-chat")
+      .on("postgres_changes", { event: "*", schema: "public", table: CFG.chatTable }, (payload) => {
+        const row = payload.new as ChatMessage;
+        if (row && row.id) onChange(row);
+      })
+      .subscribe();
+    return () => { void this.client.removeChannel(channel); };
   }
 }

@@ -7,6 +7,7 @@ import { activityBuckets, hourBuckets, rangeStart, split, tally } from "../lib/s
 import type { Account, AuditRow, DoorEvent, DoorStatus, Me, Role, Source } from "../lib/types";
 import { GROUP_OF, RANGE_DAYS, groups, methodName, ranges, roleName, roleNote, type Range } from "../lib/wording";
 import { AccountsCard, myAccountJob } from "./Accounts";
+import { DoorChat } from "./Chat";
 import { ChartTable, ColumnChart } from "./ColumnChart";
 import type { GateMode } from "./Gate";
 import { Icon } from "./Icons";
@@ -234,6 +235,9 @@ export function Dashboard({ source, me: firstMe, onGate, onSignOut }: {
       )}
 
       <Device status={data?.status ?? null} now={now} />
+
+      {/* Admins only: the database lets no one else read or write the chat. */}
+      {admin && <DoorChat source={source} status={data?.status ?? null} now={now} />}
 
       {/* One filter row: it scopes every number, chart and list below. */}
       <nav className="filters" aria-label={tr("الفترة", "Period")}>

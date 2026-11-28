@@ -5,6 +5,7 @@ export interface DoorConfig {
   table: string;
   statusTable: string;
   bucket: string;
+  chatTable: string;
 }
 
 declare global {
@@ -19,6 +20,7 @@ export const CFG: DoorConfig = {
   table: "door_events",
   statusTable: "door_status",
   bucket: "door-photos",
+  chatTable: "door_chat",
   ...(typeof window !== "undefined" ? window.DOOR_CONFIG : {}),
 };
 
@@ -31,3 +33,6 @@ export const LOG_STEP = 25;
 export const ONLINE_WITHIN = 3 * 60 * 1000;   // a heartbeat older than this = offline
 export const SIGN_SECONDS = 3600;              // signed photo links last an hour
 export const AUDIT_ROWS = 20;
+export const CHAT_ROWS = 60;                  // messages loaded when the chat opens
+export const CHAT_WAIT = 45 * 1000;           // no reply this long = "the door didn't answer"
+export const CHAT_MAX = 1000;                 // longest message (supabase/chat.sql agrees)
